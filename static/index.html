@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>로또 번호 분석 프로그램</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>로또 번호 분석 프로그램</h1>
+      <p class="subtitle">과거 데이터를 참고용으로 분석하고, 최종 번호는 완전히 무작위로 생성합니다.</p>
+    </header>
+
+    <section class="card">
+      <h2>1. 엑셀 데이터 불러오기</h2>
+      <p class="hint">
+        회차, 번호1~번호6 (선택: 보너스번호) 컬럼이 포함된 .xlsx 파일을 선택하세요.
+      </p>
+      <form id="upload-form">
+        <input type="file" id="file-input" name="file" accept=".xlsx,.xls" required />
+        <button type="submit" id="analyze-btn">분석하기</button>
+      </form>
+      <p id="upload-error" class="error" hidden></p>
+    </section>
+
+    <section class="card" id="result-section" hidden>
+      <h2>2. 분석 / 백테스트 결과 <span class="badge">참고용 · 번호 생성에 반영되지 않음</span></h2>
+
+      <div class="result-grid">
+        <div class="stat-box">
+          <h3>데이터 범위</h3>
+          <p id="stat-range">-</p>
+        </div>
+        <div class="stat-box">
+          <h3>회차별 번호 합계</h3>
+          <p id="stat-sum">-</p>
+        </div>
+        <div class="stat-box">
+          <h3>홀짝 개수 분포 (회차 기준)</h3>
+          <p id="stat-odd">-</p>
+        </div>
+        <div class="stat-box">
+          <h3>고저 개수 분포 (23~45 기준)</h3>
+          <p id="stat-high">-</p>
+        </div>
+        <div class="stat-box">
+          <h3>연속번호 포함 비율</h3>
+          <p id="stat-consecutive">-</p>
+        </div>
+        <div class="stat-box">
+          <h3>무작위 백테스트</h3>
+          <p id="stat-backtest">-</p>
+        </div>
+      </div>
+      <p class="note" id="backtest-note"></p>
+      <p class="skipped" id="skipped-info"></p>
+    </section>
+
+    <section class="card">
+      <h2>3. 최종 번호 생성</h2>
+      <p class="hint">
+        아래 버튼을 누르면 분석 결과와 무관하게 1~45 중 6개를 무작위로 생성합니다.
+        (한 번 실행에 한 조합만 생성됩니다)
+      </p>
+      <button id="generate-btn" type="button" disabled>번호 생성하기</button>
+      <div id="numbers-output" class="numbers-output" hidden></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
