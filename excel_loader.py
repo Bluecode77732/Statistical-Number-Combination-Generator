@@ -5,7 +5,7 @@ Excel 파일 읽기 및 데이터 검증 (Excel Loader & Validator)
 1회차부터 최신 회차까지의 데이터를 파싱하고 형식을 검증한다.
 
 이 모듈은 데이터를 읽고 검증하는 역할만 담당한다.
-분석(analyzer.py)이나 번호 생성(generator.py)과는 관련이 없다.
+전용 엑셀(excel_store.py)과 공식 데이터 수집(collector.py)이 같은 검증 규칙을 쓴다.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ NUMBER_ALIASES = [
     ["번호6", "num6", "6번", "번호 6", "n6"],
 ]
 BONUS_ALIASES = ["보너스번호", "보너스", "bonus", "bonus_no", "bonus_number"]
+DATE_ALIASES = ["추첨일", "date", "draw_date"]
 
 
 class ExcelValidationError(Exception):
@@ -42,6 +43,7 @@ class LottoDraw:
     round_no: int
     numbers: list[int]
     bonus: Optional[int] = None
+    draw_date: Optional[str] = None  # YYYY-MM-DD
 
 
 @dataclass
@@ -90,6 +92,7 @@ def _read_headerless(file_bytes: bytes) -> Optional[pd.DataFrame]:
 # 목적: 업로드된 Excel 바이트를 검증된 회차 목록으로 바꾼다.
 # 이유: 분석 전에 형식 오류를 걸러 내고, 제목 행이 있는 파일과 없는 파일을 모두 받기 위해서다.
 # 방법: 컬럼명으로 먼저 찾고, '회차'가 없으면 열 위치 기준으로 다시 읽은 뒤 행 단위로 검증한다.
+#       보너스가 당첨번호와 겹치는 행도 건너뛰고, '추첨일' 열이 있으면 날짜를 함께 읽는다.
 def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
     """
     Excel 바이트 데이터를 읽어 검증된 LottoDraw 목록을 반환한다.
@@ -130,6 +133,7 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
         number_cols.append(col)
 
     bonus_col = _find_column(df.columns, BONUS_ALIASES)
+    date_col = _find_column(df.columns, DATE_ALIASES)
 
     draws: list[LottoDraw] = []
     skipped_rows: list[dict] = []
@@ -169,8 +173,17 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
             bonus_val = _safe_int(row[bonus_col])
             if bonus_val is not None and MIN_NUM <= bonus_val <= MAX_NUM:
                 bonus = bonus_val
+        if bonus is not None and bonus in numbers:
+            skipped_rows.append({"row": excel_row_no, "reason": "보너스 번호가 당첨 번호와 겹칩니다."})
+            continue
 
-        draws.append(LottoDraw(round_no=round_no, numbers=sorted(numbers), bonus=bonus))
+        draw_date = None
+        if date_col is not None and not _is_blank(row[date_col]):
+            draw_date = str(row[date_col]).strip()[:10]
+
+        draws.append(
+            LottoDraw(round_no=round_no, numbers=sorted(numbers), bonus=bonus, draw_date=draw_date)
+        )
 
     if not draws:
         raise ExcelValidationError(
@@ -185,6 +198,28 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
         columns_used={"round": round_col, "numbers": number_cols, "bonus": bonus_col},
         source_filename=filename,
     )
+
+
+# 목적: 회차 목록 전체에서 행 단위 검사로는 못 잡는 문제(회차 중복, 빠진 회차)를 찾는다.
+# 이유: 자동 업데이트가 "마지막 회차 다음부터" 받기 때문에, 중간이 비거나 겹치면 분석과 수집이 모두 어긋난다.
+# 방법: 회차 번호를 세어 2번 이상 나온 것과, 1부터 최대 회차까지 중 없는 것을 돌려준다.
+def check_sequence(draws: list[LottoDraw]) -> dict[str, list[int]]:
+    seen: dict[int, int] = {}
+    for d in draws:
+        seen[d.round_no] = seen.get(d.round_no, 0) + 1
+    duplicates = sorted(n for n, c in seen.items() if c > 1)
+    last = max(seen) if seen else 0
+    missing = [n for n in range(1, last + 1) if n not in seen]
+    return {"duplicates": duplicates, "missing": missing}
+
+
+def _is_blank(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def _safe_int(value) -> Optional[int]:

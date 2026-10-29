@@ -1,12 +1,12 @@
 """
 로또 번호 분석 프로그램 - FastAPI 진입점 (Local-only web app)
 
-데이터 흐름:
-    Excel 파일 업로드 -> 검증 -> 메모리에서 분석/백테스트 -> 결과 표시
-    (사용자가 버튼을 누르면) -> 독립적인 랜덤 번호 생성기 -> 6개 번호 출력
+데이터 흐름 (설계 문서 docs/DESIGN.md 4절):
+    전용 엑셀 확인 -> 공식 데이터로 빠진 회차 업데이트(백업 후) -> 검증
+    -> 통계 분석 9개 항목 -> 워크포워드 백테스트 -> 후보 숫자 10개 한 세트
 
-분석 결과와 번호 생성기는 완전히 분리되어 있다.
-/api/generate 는 /api/analyze 의 결과를 전혀 참조하지 않는다.
+화면을 열면 /api/run 으로 위 절차를 백그라운드에서 시작하고,
+/api/status 로 단계별 진행을, /api/result 로 결과를 가져간다.
 """
 
 from __future__ import annotations
@@ -14,22 +14,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-import analyzer
-import generator
-from excel_loader import ExcelValidationError, load_excel
-from schemas import AnalyzeResponse, GenerateResponse
+from pipeline import Pipeline
 
 # 실행 파일(PyInstaller)로 묶이면 static 폴더가 sys._MEIPASS 아래에 풀린다.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="로또 번호 분석 프로그램", description="로컬 전용 로또 데이터 분석 및 번호 생성 도구")
+app = FastAPI(title="로또 번호 분석 프로그램", description="로컬 전용 로또 데이터 분석 및 후보 숫자 도구")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+pipeline = Pipeline()
 
 
 # 목적: 브라우저가 화면 파일과 응답을 디스크 캐시에 남기지 않게 한다.
@@ -47,38 +46,33 @@ def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.post("/api/analyze", response_model=AnalyzeResponse)
-async def analyze_excel(file: UploadFile = File(...)) -> AnalyzeResponse:
-    """사용자가 지정한 Excel 파일을 읽어 검증하고, 회차 단위 통계와
-    백테스트 결과만 계산해 반환한다. 번호 생성기는 호출하지 않는다."""
-    file_bytes = await file.read()
-
-    try:
-        result = load_excel(file_bytes, file.filename or "uploaded.xlsx")
-    except ExcelValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    analysis = analyzer.analyze(result.draws)
-    backtest = analyzer.backtest(result.draws)
-
-    return AnalyzeResponse(
-        file_name=result.source_filename,
-        columns_used=result.columns_used,
-        skipped_rows=result.skipped_rows,
-        analysis=analysis,
-        backtest=backtest,
-    )
+# 목적: 시작 절차를 백그라운드에서 시작한다.
+# 이유: 첫 실행의 공식 데이터 수집이 몇 분 걸려, 요청 하나로 기다리게 할 수 없다.
+# 방법: 이미 돌고 있으면 새로 시작하지 않고 현재 상태만 돌려준다.
+@app.post("/api/run")
+def run() -> dict:
+    started = pipeline.start()
+    return {"started": started, **pipeline.status()}
 
 
-@app.post("/api/generate", response_model=GenerateResponse)
-def generate() -> GenerateResponse:
-    """1~45 중 중복 없이 6개를 무작위로 뽑아 오름차순으로 반환한다.
-    분석 결과나 과거 데이터에는 전혀 접근하지 않는 독립된 호출이다."""
-    numbers = generator.generate_numbers()
-    return GenerateResponse(numbers=numbers)
+@app.get("/api/status")
+def status() -> dict:
+    return pipeline.status()
+
+
+# 목적: 끝난 절차의 결과를 돌려준다.
+# 이유: 진행 중에는 결과가 일부만 차 있어, 화면이 반쯤 찬 결과를 완성본으로 오해하지 않게 한다.
+# 방법: 실행 중이면 409, 한 번도 실행하지 않았으면 404를 돌려준다. 실패여도 남은 결과는 그대로 준다.
+@app.get("/api/result")
+def result() -> dict:
+    if pipeline.state == "running":
+        raise HTTPException(status_code=409, detail="아직 실행 중입니다.")
+    if pipeline.result is None:
+        raise HTTPException(status_code=404, detail="아직 실행한 적이 없습니다.")
+    return {"status": pipeline.status(), "result": pipeline.result}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

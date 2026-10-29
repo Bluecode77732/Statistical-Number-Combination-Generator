@@ -10,62 +10,71 @@
   <main class="container">
     <header>
       <h1>로또 번호 분석 프로그램</h1>
-      <p class="subtitle">과거 데이터를 참고용으로 분석하고, 최종 번호는 완전히 무작위로 생성합니다.</p>
+      <p class="subtitle">
+        공식 당첨 데이터를 자동으로 받아 분석하고, 백테스트로 검증한 뒤 다음 회차 후보 숫자 10개를 보여 줍니다.
+      </p>
     </header>
 
-    <section class="card">
-      <h2>1. 엑셀 데이터 불러오기</h2>
-      <p class="hint">
-        회차, 번호1~번호6 (선택: 보너스번호) 컬럼이 포함된 .xlsx 파일을 선택하세요.
-      </p>
-      <form id="upload-form">
-        <input type="file" id="file-input" name="file" accept=".xlsx,.xls" required />
-        <button type="submit" id="analyze-btn">분석하기</button>
-      </form>
-      <p id="upload-error" class="error" hidden></p>
-    </section>
-
-    <section class="card" id="result-section" hidden>
-      <h2>2. 분석 / 백테스트 결과 <span class="badge">참고용 · 번호 생성에 반영되지 않음</span></h2>
-
-      <div class="result-grid">
-        <div class="stat-box">
-          <h3>데이터 범위</h3>
-          <p id="stat-range">-</p>
-        </div>
-        <div class="stat-box">
-          <h3>회차별 번호 합계</h3>
-          <p id="stat-sum">-</p>
-        </div>
-        <div class="stat-box">
-          <h3>홀짝 개수 분포 (회차 기준)</h3>
-          <p id="stat-odd">-</p>
-        </div>
-        <div class="stat-box">
-          <h3>고저 개수 분포 (23~45 기준)</h3>
-          <p id="stat-high">-</p>
-        </div>
-        <div class="stat-box">
-          <h3>연속번호 포함 비율</h3>
-          <p id="stat-consecutive">-</p>
-        </div>
-        <div class="stat-box">
-          <h3>무작위 백테스트</h3>
-          <p id="stat-backtest">-</p>
-        </div>
+    <section class="card" id="status-section">
+      <div class="card-head">
+        <h2>진행 상황</h2>
+        <button id="rerun-btn" type="button" disabled>다시 실행</button>
       </div>
-      <p class="note" id="backtest-note"></p>
-      <p class="skipped" id="skipped-info"></p>
+      <ol id="steps" class="steps"></ol>
+      <p id="status-message" class="hint"></p>
     </section>
 
-    <section class="card">
-      <h2>3. 최종 번호 생성</h2>
-      <p class="hint">
-        아래 버튼을 누르면 분석 결과와 무관하게 1~45 중 6개를 무작위로 생성합니다.
-        (한 번 실행에 한 조합만 생성됩니다)
+    <section class="card" id="candidate-section" hidden>
+      <h2>다음 회차 후보 숫자 <span id="target-round" class="badge"></span></h2>
+      <p class="notice">
+        아래 10개는 로또 6/45의 한 게임(6개)이 아니라 <strong>후보 숫자 목록</strong>입니다.
+        당첨을 보장하지 않으며, 모델 점수는 실제 당첨 확률이 아닙니다.
       </p>
-      <button id="generate-btn" type="button" disabled>번호 생성하기</button>
-      <div id="numbers-output" class="numbers-output" hidden></div>
+      <p class="candidate-line" id="candidate-line"></p>
+      <div id="candidate-balls" class="balls"></div>
+      <p id="candidate-method" class="hint"></p>
+      <p id="candidate-verdict" class="verdict"></p>
+    </section>
+
+    <section class="card" id="data-section" hidden>
+      <h2>데이터</h2>
+      <dl id="data-info" class="info"></dl>
+      <div id="data-extra"></div>
+    </section>
+
+    <section class="card" id="backtest-section" hidden>
+      <h2>워크포워드 백테스트</h2>
+      <p class="hint">
+        각 회차를 그 이전 회차 데이터만으로 학습해 후보 10개를 만들고, 실제 당첨번호 6개와 몇 개 일치했는지 셉니다.
+        무작위로 10개를 고를 때의 이론 평균은 10 × 6 / 45 = 1.333개입니다.
+      </p>
+      <dl id="backtest-info" class="info"></dl>
+      <h3>모델별 결과</h3>
+      <div class="table-wrap"><table id="backtest-summary"></table></div>
+      <h3>일치 개수별 회차 수</h3>
+      <div class="table-wrap"><table id="backtest-dist"></table></div>
+      <p id="overfit-note" class="hint"></p>
+      <details>
+        <summary>회차별 후보와 실제 결과 보기</summary>
+        <div class="table-wrap scroll"><table id="backtest-rows"></table></div>
+      </details>
+    </section>
+
+    <section class="card" id="model-section" hidden>
+      <h2>로지스틱 회귀 모델</h2>
+      <p class="hint">
+        각 번호가 다음 회차에 들어갈지를 아래 특징값으로 설명하는 모델입니다. 특징값은 모두 예측할 회차 이전 기록만으로
+        계산합니다. 가중치는 표준화된 특징 기준이라 크기를 서로 비교할 수 있고, 0에 가까울수록 그 특징이 점수에 거의
+        영향을 주지 않는다는 뜻입니다. 점수 상위 10개가 후보가 되며, 이 점수는 실제 당첨 확률이 아닙니다
+        (각 번호의 실제 확률은 모델과 무관하게 6/45 ≈ 13.3%).
+      </p>
+      <div class="table-wrap"><table id="model-weights"></table></div>
+    </section>
+
+    <section class="card" id="analysis-section" hidden>
+      <h2>통계 분석</h2>
+      <p class="hint">아래 결과는 참고용 통계입니다. 출현 빈도만으로 후보를 고르지 않습니다.</p>
+      <div id="analysis-list"></div>
     </section>
   </main>
 

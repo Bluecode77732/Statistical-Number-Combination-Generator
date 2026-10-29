@@ -19,6 +19,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# App data written at runtime (data_dir in excel_store.py)
+data/
+
 # User-provided data files (kept local, not versioned)
 *.xlsx
 *.xls
