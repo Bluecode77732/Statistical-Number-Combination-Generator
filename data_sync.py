@@ -52,6 +52,7 @@ def _describe(d: LottoDraw) -> str:
 # 이유: 실행할 때마다 최신 회차를 시도하되, 수집이나 저장이 실패해도 기존 정상 데이터는 그대로 두어야 한다.
 # 방법: 1) 파일을 읽고 검증한다. 2) 빠진 회차·중복 회차·최근 10회 중 가장 이른 곳부터 공식 데이터를 받는다.
 #       3) 다른 회차는 공식 값으로 고치고 새 회차는 붙인다. 4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다.
+#       엑셀이 아직 없으면 수집 전에 데이터 폴더에 쓸 수 있는지 확인해, 못 쓰면 수집하지 않고 바로 안내한다.
 def sync(
     store_path: Optional[Path] = None,
     http_get: Optional[collector.HttpGet] = None,
@@ -77,6 +78,13 @@ def sync(
         report.skipped_rows = stored.skipped_rows
         for row in stored.skipped_rows:
             report.messages.append(f"엑셀 {row['row']}행을 건너뜀: {row['reason']}")
+
+    else:
+        try:
+            excel_store.ensure_writable_dir(path.parent)
+        except excel_store.StoreError as exc:
+            report.messages.append(str(exc))
+            return report
 
     by_round: dict[int, LottoDraw] = {}
     for d in existing:

@@ -48,6 +48,23 @@ def data_dir() -> Path:
     return Path(__file__).resolve().parent / "data"
 
 
+# 목적: 폴더를 만들 수 있는지, 그 안에 파일을 쓸 수 있는지 미리 확인한다.
+# 이유: 쓸 수 없는 폴더(Program Files 등)에서는 2~5분 수집을 마친 뒤에야 저장이 실패하므로, 시작할 때 알려야 한다.
+# 방법: 폴더를 만들고 작은 임시 파일을 써 본 뒤 지운다. 실패하면 StoreError에 다음에 할 일을 담는다.
+def ensure_writable_dir(folder: Path) -> None:
+    probe = folder / f".write-test-{os.getpid()}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"")
+    except OSError as exc:
+        raise StoreError(
+            f"데이터를 저장할 폴더를 만들거나 쓸 수 없습니다: {folder} "
+            "바탕화면이나 문서 폴더처럼 쓰기 권한이 있는 곳에 압축을 풀어 다시 실행해 주세요."
+        ) from exc
+    finally:
+        _remove_quietly(probe)
+
+
 # 목적: 전용 엑셀의 당첨번호와 변경기록을 읽는다.
 # 이유: 업데이트 전에 기존 데이터를 검증하고, 다시 쓸 때 변경기록을 잃지 않아야 한다.
 # 방법: 당첨번호는 기존 검증 로더(load_excel)로 읽고, 변경기록 시트는 openpyxl로 그대로 읽는다.
@@ -83,9 +100,13 @@ def read_store(path: Path) -> StoredData:
 # 목적: 바꾸기 직전의 엑셀을 백업 폴더에 복사하고, 오래된 백업을 정리한다.
 # 이유: 업데이트가 잘못돼도 직전 상태로 되돌릴 수 있어야 하고, 실행마다 백업이 쌓이면 안 된다.
 # 방법: data\backup\lotto_YYYYMMDD_HHMMSS.xlsx로 복사한 뒤, 이름순(=시간순)으로 최근 BACKUP_KEEP개만 남긴다.
+#       백업 폴더를 만들지 못하는 경우도 처리되지 않은 오류가 아니라 StoreError로 알린다.
 def backup_store(path: Path, now: Optional[datetime] = None) -> Path:
     backup_dir = path.parent / "backup"
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StoreError(f"백업 폴더를 만들지 못해 업데이트를 중단했습니다: {exc}") from exc
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     target = backup_dir / f"{path.stem}_{stamp}{path.suffix}"
     counter = 1
@@ -109,8 +130,12 @@ def backup_store(path: Path, now: Optional[datetime] = None) -> Path:
 # 목적: 워크북을 원본을 해치지 않는 방식으로 저장한다.
 # 이유: 저장 도중 실패(디스크, 전원, 열린 파일)하면 원본이 반쯤 쓰인 채 남을 수 있다.
 # 방법: 같은 폴더의 임시 파일에 먼저 저장하고 os.replace로 바꿔치기한다. 실패하면 임시 파일만 지운다.
+#       폴더를 만들 수 없는 경우도 StoreError로 바꿔, 호출한 쪽이 한글 안내를 화면에 낼 수 있게 한다.
 def _save_atomic(wb: Workbook, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StoreError(f"데이터 폴더를 만들지 못했습니다: {path.parent} ({exc})") from exc
     tmp = path.with_name(f".{path.stem}.tmp-{os.getpid()}{path.suffix}")
     try:
         wb.save(tmp)

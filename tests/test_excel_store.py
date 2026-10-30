@@ -56,6 +56,33 @@ class StoreTest(unittest.TestCase):
         with self.assertRaises(excel_store.StoreError):
             excel_store.read_store(self.path)
 
+    def blocked_folder(self) -> Path:
+        # 부모가 파일이면 폴더를 만들 수 없다. 권한 설정 없이 쓰기 불가 폴더를 흉내 낸다.
+        blocker = self.dir / "blocker"
+        blocker.write_bytes(b"x")
+        return blocker / "data"
+
+    def test_ensure_writable_dir_creates_folder_and_leaves_no_probe(self):
+        folder = self.dir / "new" / "data"
+        excel_store.ensure_writable_dir(folder)
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(list(folder.iterdir()), [])
+
+    def test_unwritable_folder_raises_store_error_with_guidance(self):
+        with self.assertRaises(excel_store.StoreError) as ctx:
+            excel_store.ensure_writable_dir(self.blocked_folder())
+        self.assertIn("쓰기 권한", str(ctx.exception))
+
+    def test_write_store_in_unwritable_folder_raises_store_error(self):
+        with self.assertRaises(excel_store.StoreError):
+            excel_store.write_store(self.blocked_folder() / "lotto.xlsx", make_draws(5), [])
+
+    def test_backup_in_unwritable_folder_raises_store_error(self):
+        excel_store.write_store(self.path, make_draws(5), [])
+        with mock.patch.object(Path, "mkdir", side_effect=FileExistsError("blocked")):
+            with self.assertRaises(excel_store.StoreError):
+                excel_store.backup_store(self.path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,15 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(report.latest_round, 40)
         self.assertEqual(self.backups(), [])
 
+    def test_first_run_in_unwritable_folder_stops_before_fetching(self):
+        blocker = Path(self.tmp.name) / "blocker"
+        blocker.write_bytes(b"x")
+        self.path = blocker / "data" / "lotto.xlsx"
+        report = self.sync()
+        self.assertEqual(report.status, "failed")
+        self.assertEqual(self.server.calls, [])  # 몇 분 걸리는 수집을 시작하지 않는다
+        self.assertIn("쓰기 권한", report.messages[-1])
+
     def test_second_run_is_up_to_date_and_makes_no_backup(self):
         self.sync()
         before = self.path.read_bytes()
