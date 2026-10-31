@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -76,6 +77,29 @@ class StoreTest(unittest.TestCase):
     def test_write_store_in_unwritable_folder_raises_store_error(self):
         with self.assertRaises(excel_store.StoreError):
             excel_store.write_store(self.blocked_folder() / "lotto.xlsx", make_draws(5), [])
+
+    def make_temp(self, name: str, age_seconds: float) -> Path:
+        p = self.dir / name
+        p.write_bytes(b"x")
+        old = p.stat().st_mtime - age_seconds
+        os.utime(p, (old, old))
+        return p
+
+    def test_cleanup_removes_only_stale_app_temp_files(self):
+        stale_store = self.make_temp(".lotto.tmp-111.xlsx", excel_store.STALE_TEMP_SECONDS + 60)
+        stale_backtest = self.make_temp(".backtest.tmp-222.xlsx", excel_store.STALE_TEMP_SECONDS + 60)
+        fresh = self.make_temp(".lotto.tmp-333.xlsx", 10)  # 다른 실행기가 저장 중일 수 있는 파일
+        other = self.make_temp(".other.tmp-444.xlsx", excel_store.STALE_TEMP_SECONDS + 60)
+        excel_store.write_store(self.path, make_draws(5), [])
+        (self.dir / "backup").mkdir()
+        removed = excel_store.cleanup_stale_temp(self.dir)
+        self.assertEqual(sorted(removed), sorted([stale_store.name, stale_backtest.name]))
+        self.assertFalse(stale_store.exists() or stale_backtest.exists())
+        self.assertTrue(fresh.exists() and other.exists())
+        self.assertTrue(self.path.exists() and (self.dir / "backup").is_dir())  # 실제 데이터는 그대로
+
+    def test_cleanup_ignores_missing_folder(self):
+        self.assertEqual(excel_store.cleanup_stale_temp(self.dir / "nope"), [])
 
     def test_backup_in_unwritable_folder_raises_store_error(self):
         excel_store.write_store(self.path, make_draws(5), [])

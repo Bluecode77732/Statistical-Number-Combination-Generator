@@ -53,6 +53,7 @@ def _describe(d: LottoDraw) -> str:
 # 방법: 1) 파일을 읽고 검증한다. 2) 빠진 회차·중복 회차·최근 10회 중 가장 이른 곳부터 공식 데이터를 받는다.
 #       3) 다른 회차는 공식 값으로 고치고 새 회차는 붙인다. 4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다.
 #       엑셀이 아직 없으면 수집 전에 데이터 폴더에 쓸 수 있는지 확인해, 못 쓰면 수집하지 않고 바로 안내한다.
+#       시작할 때 이전 실행이 저장 중 종료되며 남긴 오래된 임시 파일도 함께 정리한다.
 def sync(
     store_path: Optional[Path] = None,
     http_get: Optional[collector.HttpGet] = None,
@@ -65,6 +66,7 @@ def sync(
     report = SyncReport(status="failed", store_path=str(path))
     say = progress or (lambda _msg: None)
 
+    excel_store.cleanup_stale_temp(path.parent)
     existing: list[LottoDraw] = []
     log_rows: list[list] = []
     exists = path.exists()

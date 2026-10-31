@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ LOG_HEADER = ["시각", "회차", "구분", "내용"]
 BACKUP_KEEP = 10
 STORE_NAME = "lotto.xlsx"
 BACKTEST_NAME = "backtest.xlsx"
+STALE_TEMP_SECONDS = 3600  # 이보다 오래 남은 저장용 임시 파일은 이전 실행의 잔여물로 본다
 
 
 class StoreError(Exception):
@@ -155,6 +157,29 @@ def _remove_quietly(p: Path) -> None:
         p.unlink()
     except OSError:
         pass
+
+
+# 목적: 이전 실행이 저장 도중 강제 종료되어 남긴 임시 파일(.lotto.tmp-…, .backtest.tmp-…)을 지운다.
+# 이유: 저장 중 종료되면 _save_atomic이 정리하지 못해 데이터 폴더에 임시 파일이 쌓일 수 있다.
+# 방법: 앱이 만드는 이름 형식만 찾아 마지막 수정 후 STALE_TEMP_SECONDS가 지난 것만 지운다. 다른 실행기가
+#       저장 중인 파일은 건드리지 않으며, 지우지 못해도 오류 없이 넘어가고 지운 파일 이름을 돌려준다.
+def cleanup_stale_temp(folder: Path, now: Optional[float] = None) -> list[str]:
+    current = time.time() if now is None else now
+    removed: list[str] = []
+    for name in (STORE_NAME, BACKTEST_NAME):
+        pattern = f".{Path(name).stem}.tmp-*{Path(name).suffix}"
+        try:
+            candidates = list(folder.glob(pattern))
+        except OSError:
+            continue
+        for tmp in candidates:
+            try:
+                if tmp.is_file() and current - tmp.stat().st_mtime > STALE_TEMP_SECONDS:
+                    tmp.unlink()
+                    removed.append(tmp.name)
+            except OSError:
+                pass  # 지우지 못한 파일은 다음 실행 때 다시 시도한다
+    return removed
 
 
 # 목적: 당첨번호 전체와 변경기록을 전용 엑셀로 저장한다.

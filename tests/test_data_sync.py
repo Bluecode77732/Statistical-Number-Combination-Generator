@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -51,6 +52,15 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(report.status, "failed")
         self.assertEqual(self.server.calls, [])  # 몇 분 걸리는 수집을 시작하지 않는다
         self.assertIn("쓰기 권한", report.messages[-1])
+
+    def test_sync_cleans_stale_temp_left_by_killed_save(self):
+        leftover = self.path.parent / ".lotto.tmp-999.xlsx"
+        leftover.write_bytes(b"half written")
+        old = leftover.stat().st_mtime - excel_store.STALE_TEMP_SECONDS - 60
+        os.utime(leftover, (old, old))
+        report = self.sync()
+        self.assertEqual(report.status, "created")
+        self.assertFalse(leftover.exists())
 
     def test_second_run_is_up_to_date_and_makes_no_backup(self):
         self.sync()
