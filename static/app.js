@@ -7,6 +7,7 @@ const STATE_LABELS = {
   skipped: "건너뜀",
 };
 const POLL_MS = 1000;
+const RESULT_SECTIONS = ["candidate-section", "data-section", "backtest-section", "model-section", "analysis-section"];
 
 const rerunBtn = document.getElementById("rerun-btn");
 let pollTimer = null;
@@ -73,14 +74,26 @@ function info(id, pairs) {
   );
 }
 
+// 목적: 이전 실행의 결과 카드를 모두 숨기고 오류 표시를 지운다.
+// 이유: 다시 실행이 실패하거나 도중에 끝나면 예전 후보와 분석이 새 결과처럼 화면에 남아 있었다(감사 A-12).
+// 방법: 결과 카드를 hidden으로 되돌리고 상태 문구의 error 표시를 뗀다. 새 결과는 loadResult가 다시 그린다.
+function hideResults() {
+  RESULT_SECTIONS.forEach((id) => {
+    document.getElementById(id).hidden = true;
+  });
+  document.getElementById("status-message").classList.remove("error");
+}
+
 // 목적: 시작 절차를 시작(또는 이미 도는 절차에 합류)하고 진행 상태를 주기적으로 갱신한다.
 // 이유: 첫 실행은 공식 데이터 수집에 몇 분이 걸려, 사용자가 무엇이 진행 중인지 볼 수 있어야 한다.
 // 방법: /api/run으로 시작한 뒤 /api/status를 1초마다 읽고, 끝나면 /api/result를 한 번 받아 그린다.
+//       새로 시작할 때는 먼저 이전 결과를 숨겨, 실패해도 옛 결과가 남지 않게 한다.
 async function start(force) {
   rerunBtn.disabled = true;
   try {
     let status = await requestJson("/api/status", {}, "상태를 읽지 못했습니다.");
     if (force || status.state === "idle") {
+      hideResults();
       status = await requestJson("/api/run", { method: "POST" }, "실행을 시작하지 못했습니다.");
     }
     renderStatus(status);
@@ -125,12 +138,16 @@ function renderStatus(status) {
   rerunBtn.disabled = status.state === "running";
 }
 
+// 목적: 끝난 절차의 결과를 받아 있는 만큼의 카드를 그린다.
+// 이유: 일부 단계만 끝난 실패 결과도 그 범위까지는 보여 줘야 하고, 오류 안내는 서버가 정한 문구를 따라야 한다.
+// 방법: /api/result를 읽어 결과 키가 있는 카드만 그린다. 예상하지 못한 오류면 서버의 상태 문구를 오류 색으로 보여 준다.
 async function loadResult() {
   const data = await requestJson("/api/result", {}, "결과를 읽지 못했습니다.");
   renderStatus(data.status);
   const r = data.result || {};
   if (r.error) {
-    document.getElementById("status-message").textContent = "예상하지 못한 오류로 중단했습니다.";
+    document.getElementById("status-message").textContent =
+      data.status.message || "예상하지 못한 오류로 중단했습니다.";
     document.getElementById("status-message").classList.add("error");
   }
   if (r.sync) renderData(r.sync, r.validation);

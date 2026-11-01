@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Optional
 
 from excel_loader import MAX_NUM, MIN_NUM, NUMBER_COUNT, LottoDraw
@@ -52,10 +54,20 @@ def default_http_get(url: str) -> bytes:
         return res.read()
 
 
+# 목적: 통신 실패의 원인에 맞는 안내 문구를 고른다.
+# 이유: 사이트가 요청을 거절(403 등)했는데도 "인터넷 연결 확인"만 안내하면 사용자가 엉뚱한 곳을 점검한다(감사 A-13).
+# 방법: HTTP 오류 번호가 있으면 번호를 밝히고 잠시 뒤 재실행을 권하며, 그 밖의 실패는 연결 확인을 안내한다.
+def _network_message(exc: Optional[Exception]) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return (f"공식 사이트가 요청을 받아 주지 않았습니다(HTTP {exc.code}). "
+                "잠시 뒤 다시 실행해 보세요. 계속되면 사이트가 바뀌었거나 접속이 제한되었을 수 있습니다.")
+    return "공식 사이트에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요."
+
+
 # 목적: 응답 한 쪽(최대 10회차)을 받아 원본 목록으로 돌려준다.
 # 이유: 일시적인 끊김은 다시 시도하면 되지만, 형식이 바뀐 응답은 다시 시도해도 소용없어 구분해야 한다.
-# 방법: 네트워크 오류만 간격을 두고 재시도하고, JSON이 아니거나 data.list가 없으면 바로 형식 오류로 멈춘다.
-#       화면에 보이는 메시지에는 영문 시스템 오류문을 싣지 않고, 다음에 할 일(인터넷 연결 확인)을 적는다.
+# 방법: 네트워크 오류(응답 도중 끊김 포함)만 간격을 두고 재시도하고, JSON이 아니거나 data.list가 없으면 바로 형식 오류로 멈춘다.
+#       화면에 보이는 메시지에는 영문 시스템 오류문을 싣지 않고, 원인에 맞는 다음 할 일을 적는다.
 def _get_page(http_get: HttpGet, query: str, sleep: Callable[[float], None]) -> list[dict]:
     url = f"{BASE_URL}?{query}"
     last_error: Optional[Exception] = None
@@ -63,12 +75,12 @@ def _get_page(http_get: HttpGet, query: str, sleep: Callable[[float], None]) -> 
         try:
             body = http_get(url)
             break
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             last_error = exc
             if attempt < RETRIES:
                 sleep(RETRY_WAIT_SECONDS * (attempt + 1))
     else:
-        raise CollectError("공식 사이트에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.", "network") from last_error
+        raise CollectError(_network_message(last_error), "network") from last_error
 
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -84,7 +96,8 @@ def _get_page(http_get: HttpGet, query: str, sleep: Callable[[float], None]) -> 
 
 # 목적: 응답의 회차 하나를 검증해 LottoDraw로 바꾼다.
 # 이유: 받은 값이 잘못됐을 때 그대로 저장하면 엑셀이 오염된다.
-# 방법: 필드가 정수인지, 번호 6개가 1~45에서 서로 다른지, 보너스가 범위 안이고 겹치지 않는지 본다.
+# 방법: 필드가 정수인지, 번호 6개가 1~45에서 서로 다른지, 보너스가 범위 안이고 겹치지 않는지,
+#       추첨일이 8자리이면서 달력에 있는 날짜인지 본다.
 def parse_item(item: dict) -> LottoDraw:
     try:
         round_no = int(item["ltEpsd"])
@@ -102,6 +115,10 @@ def parse_item(item: dict) -> LottoDraw:
         raise ValueError("보너스 번호가 올바르지 않습니다.")
     if len(ymd) != 8 or not ymd.isdigit():
         raise ValueError("추첨일 형식이 올바르지 않습니다.")
+    try:
+        datetime.strptime(ymd, "%Y%m%d")
+    except ValueError as exc:
+        raise ValueError("추첨일이 달력에 없는 날짜입니다.") from exc
 
     return LottoDraw(
         round_no=round_no,

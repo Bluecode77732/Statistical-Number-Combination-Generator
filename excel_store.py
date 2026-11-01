@@ -76,7 +76,9 @@ def read_store(path: Path) -> StoredData:
     except PermissionError as exc:
         raise StoreError(f"엑셀 파일을 열 수 없습니다. 다른 프로그램이 쓰고 있다면 닫아 주세요: {path}") from exc
     except OSError as exc:
-        raise StoreError(f"엑셀 파일을 읽지 못했습니다: {exc}") from exc
+        raise StoreError(
+            f"엑셀 파일을 읽지 못했습니다: {exc} 파일 위치와 권한을 확인한 뒤 다시 실행해 주세요."
+        ) from exc
 
     try:
         loaded = load_excel(data, path.name)
@@ -149,7 +151,9 @@ def _save_atomic(wb: Workbook, path: Path) -> None:
         ) from exc
     except OSError as exc:
         _remove_quietly(tmp)
-        raise StoreError(f"엑셀 파일을 저장하지 못했습니다: {exc}") from exc
+        raise StoreError(
+            f"엑셀 파일을 저장하지 못했습니다: {exc} 디스크 공간과 폴더 쓰기 권한을 확인한 뒤 다시 실행해 주세요."
+        ) from exc
 
 
 def _remove_quietly(p: Path) -> None:

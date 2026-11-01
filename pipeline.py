@@ -70,12 +70,15 @@ class Pipeline:
     def _say(self, key: str):
         return lambda msg: self._step(key, "running", msg)
 
+    # 목적: run을 돌리고, 예상하지 못한 오류가 나도 실행 상태를 끝으로 바꾼다.
+    # 이유: 스레드가 조용히 죽으면 화면이 "진행 중"에서 영원히 멈춘다.
+    # 방법: 모든 예외를 잡아 failed 상태와 다음에 할 일이 담긴 메시지로 바꾸고, 끝난 시각은 항상 남긴다.
     def _run_safely(self) -> None:
         try:
             self.run()
         except Exception:  # noqa: BLE001 - 예상 못 한 오류도 화면에 남겨야 한다
             self.state = "failed"
-            self.current_message = "예상하지 못한 오류로 중단했습니다."
+            self.current_message = "예상하지 못한 오류로 중단했습니다. 프로그램을 닫고 다시 실행해 보세요."
             self.result = {"error": traceback.format_exc(limit=5)}
         finally:
             self.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -83,6 +86,7 @@ class Pipeline:
     # 목적: 시작 절차의 각 단계를 실행하고 결과를 한 덩어리로 모은다.
     # 이유: 업데이트나 백테스트가 실패해도, 가능한 범위의 결과(기존 데이터 분석, 무작위 대체 후보)는 보여 줘야 한다.
     # 방법: 업데이트 실패 중 데이터가 아예 없는 경우만 중단하고, 나머지 실패는 상태와 메시지로 남긴 채 다음 단계로 간다.
+    #       저장하지 못했거나 건너뛴 엑셀 행이 있으면 단계 문구에도 밝혀, "업데이트함"·"이상 없음"으로 오해하지 않게 한다.
     def run(self) -> None:
         self._step("sync", "running")
         report = data_sync.sync(progress=self._say("sync"))
@@ -98,7 +102,8 @@ class Pipeline:
                        "offline": "업데이트 실패 — 기존 데이터 사용", "failed": "실패"}
         sync_state = "warning" if report.status == "offline" or (report.status != "failed" and not report.saved) else (
             "failed" if report.status == "failed" else "done")
-        self._step("sync", sync_state, f"{sync_labels[report.status]} (확인된 최신 {report.latest_round}회차)")
+        unsaved = " — 엑셀 파일에는 반영하지 못함" if report.status in ("created", "updated") and not report.saved else ""
+        self._step("sync", sync_state, f"{sync_labels[report.status]} (확인된 최신 {report.latest_round}회차){unsaved}")
         self.result = {"sync": sync_info}
         if report.status == "failed":
             for key in ("validate", "analysis", "backtest", "candidates"):
@@ -115,6 +120,8 @@ class Pipeline:
             problems.append(f"빠진 회차 {len(issues['missing'])}개: {issues['missing'][:10]}")
         if issues.get("duplicates"):
             problems.append(f"중복 회차: {issues['duplicates'][:10]}")
+        if report.skipped_rows:
+            problems.append(f"건너뛴 엑셀 행 {len(report.skipped_rows)}개 (사유는 데이터 영역의 알림 참고)")
         self.result["validation"] = {"rounds": len(draws), "missing": issues.get("missing", []),
                                      "duplicates": issues.get("duplicates", []),
                                      "skipped_rows": report.skipped_rows}

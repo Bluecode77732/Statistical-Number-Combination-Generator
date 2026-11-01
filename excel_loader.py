@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -92,7 +93,8 @@ def _read_headerless(file_bytes: bytes) -> Optional[pd.DataFrame]:
 # 목적: 업로드된 Excel 바이트를 검증된 회차 목록으로 바꾼다.
 # 이유: 분석 전에 형식 오류를 걸러 내고, 제목 행이 있는 파일과 없는 파일을 모두 받기 위해서다.
 # 방법: 컬럼명으로 먼저 찾고, '회차'가 없으면 열 위치 기준으로 다시 읽은 뒤 행 단위로 검증한다.
-#       보너스가 당첨번호와 겹치는 행도 건너뛰고, '추첨일' 열이 있으면 날짜를 함께 읽는다.
+#       회차가 1 미만이거나, 보너스가 범위 밖이거나 당첨번호와 겹치거나, 추첨일이 달력에 없는 날짜인 행도 건너뛴다.
+#       보너스·추첨일 칸이 비어 있는 것은 옛 형식으로 보고 허용한다.
 def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
     """
     Excel 바이트 데이터를 읽어 검증된 LottoDraw 목록을 반환한다.
@@ -142,8 +144,8 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
         excel_row_no = int(idx) + row_offset
 
         round_no = _safe_int(row[round_col])
-        if round_no is None:
-            skipped_rows.append({"row": excel_row_no, "reason": "회차 값이 올바른 정수가 아닙니다."})
+        if round_no is None or round_no < 1:
+            skipped_rows.append({"row": excel_row_no, "reason": "회차는 1 이상의 정수여야 합니다."})
             continue
 
         numbers: list[int] = []
@@ -169,10 +171,13 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
             continue
 
         bonus = None
-        if bonus_col is not None:
-            bonus_val = _safe_int(row[bonus_col])
-            if bonus_val is not None and MIN_NUM <= bonus_val <= MAX_NUM:
-                bonus = bonus_val
+        if bonus_col is not None and not _is_blank(row[bonus_col]):
+            bonus = _safe_int(row[bonus_col])
+            if bonus is None or not MIN_NUM <= bonus <= MAX_NUM:
+                skipped_rows.append(
+                    {"row": excel_row_no, "reason": f"보너스 번호는 {MIN_NUM}~{MAX_NUM} 범위의 정수여야 합니다."}
+                )
+                continue
         if bonus is not None and bonus in numbers:
             skipped_rows.append({"row": excel_row_no, "reason": "보너스 번호가 당첨 번호와 겹칩니다."})
             continue
@@ -180,6 +185,9 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
         draw_date = None
         if date_col is not None and not _is_blank(row[date_col]):
             draw_date = str(row[date_col]).strip()[:10]
+            if not _is_valid_date(draw_date):
+                skipped_rows.append({"row": excel_row_no, "reason": "추첨일이 YYYY-MM-DD 형식의 실제 날짜가 아닙니다."})
+                continue
 
         draws.append(
             LottoDraw(round_no=round_no, numbers=sorted(numbers), bonus=bonus, draw_date=draw_date)
@@ -222,8 +230,11 @@ def _is_blank(value) -> bool:
         return False
 
 
+# 목적: 엑셀 칸의 값을 정수로 읽고, 정수가 아니면 None을 돌려준다.
+# 이유: 1.9를 1로 잘라 읽으면 잘못된 번호가 조용히 통과해 분석과 저장에 섞여 들어간다(감사 A-10).
+# 방법: 실수는 정수와 같을 때만 받는다(엑셀이 5를 5.0으로 줄 수 있다). 비어 있거나 불리언이거나 숫자가 아니면 None이다.
 def _safe_int(value) -> Optional[int]:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         if pd.isna(value):
@@ -231,6 +242,20 @@ def _safe_int(value) -> Optional[int]:
     except (TypeError, ValueError):
         pass
     try:
-        return int(value)
+        number = float(value)
     except (ValueError, TypeError):
         return None
+    return int(number) if number.is_integer() else None
+
+
+# 목적: 문자열이 YYYY-MM-DD 형식의 실제 달력 날짜인지 확인한다.
+# 이유: 형식만 보고 받으면 2026-13-99 같은 날짜가 전용 엑셀에 저장된다(감사 A-10).
+# 방법: strptime으로 읽어 보고, 자릿수가 다른 값(2026-1-5)은 따로 거른다.
+def _is_valid_date(text: str) -> bool:
+    if len(text) != 10:
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
