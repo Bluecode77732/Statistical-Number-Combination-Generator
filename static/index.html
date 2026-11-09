@@ -25,7 +25,10 @@
     </section>
 
     <section class="card" id="candidate-section" hidden>
-      <h2>다음 회차 후보 숫자 <span id="target-round" class="badge"></span></h2>
+      <div class="card-head">
+        <h2>다음 회차 후보 숫자 <span id="target-round" class="badge"></span></h2>
+        <button id="redraw-btn" type="button" disabled>번호 재산출</button>
+      </div>
       <p class="notice">
         아래 10개는 로또 6/45의 한 게임(6개)이 아니라 <strong>후보 숫자 목록</strong>입니다.
         당첨을 보장하지 않으며, 모델 점수는 실제 당첨 확률이 아닙니다.
@@ -35,6 +38,11 @@
       <p id="candidate-method" class="hint"></p>
       <p id="candidate-ties" class="hint"></p>
       <p id="candidate-previous" class="hint"></p>
+      <p class="hint">
+        번호 재산출: 데이터 수집·분석·백테스트는 다시 하지 않고, 같은 방식으로 후보 10개만 새로 고릅니다. 다시 골라도
+        각 번호의 실제 당첨 확률(6/45)은 달라지지 않습니다.
+      </p>
+      <p id="redraw-message" class="hint"></p>
       <p id="candidate-verdict" class="verdict"></p>
     </section>
 

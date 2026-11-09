@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from pipeline import Pipeline
+from pipeline import Pipeline, RedrawUnavailable
 
 # 실행 파일(PyInstaller)로 묶이면 static 폴더가 sys._MEIPASS 아래에 풀린다.
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -70,6 +70,18 @@ def result() -> dict:
     if pipeline.result is None:
         raise HTTPException(status_code=404, detail="아직 실행한 적이 없습니다.")
     return {"status": pipeline.status(), "result": pipeline.result}
+
+
+# 목적: 마지막 실행의 데이터로 후보 10개만 새로 고른다.
+# 이유: 전체 절차를 다시 돌리지 않고 새 후보 한 세트를 보게 하는 "번호 재산출" 버튼용이다.
+# 방법: Pipeline.redraw에 넘기고, 지금 할 수 없으면(실행 중, 실행 전) 409와 다음에 할 일을 돌려준다.
+@app.post("/api/redraw")
+def redraw() -> dict:
+    try:
+        cand = pipeline.redraw()
+    except RedrawUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": pipeline.status(), "candidates": cand}
 
 
 if __name__ == "__main__":

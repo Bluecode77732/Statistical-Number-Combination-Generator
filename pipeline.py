@@ -24,6 +24,10 @@ STEPS = [
 ]
 
 
+class RedrawUnavailable(Exception):
+    """지금은 후보를 다시 고를 수 없을 때 발생. 메시지는 사용자에게 그대로 보여 준다."""
+
+
 class Pipeline:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -35,6 +39,7 @@ class Pipeline:
         self.steps = {key: {"key": key, "label": label, "state": "pending", "message": ""} for key, label in STEPS}
         self.current_message = ""
         self.result: Optional[dict] = None
+        self._draws: Optional[list] = None  # 마지막 실행이 후보를 만들 때 쓴 데이터 (재산출용)
         self.started_at: Optional[str] = None
         self.finished_at: Optional[str] = None
 
@@ -87,6 +92,7 @@ class Pipeline:
     # 이유: 업데이트나 백테스트가 실패해도, 가능한 범위의 결과(기존 데이터 분석, 무작위 대체 후보)는 보여 줘야 한다.
     # 방법: 업데이트 실패 중 데이터가 아예 없는 경우만 중단하고, 나머지 실패는 상태와 메시지로 남긴 채 다음 단계로 간다.
     #       저장하지 못했거나 건너뛴 엑셀 행이 있으면 단계 문구에도 밝혀, "업데이트함"·"이상 없음"으로 오해하지 않게 한다.
+    #       후보를 만든 데이터는 재산출(redraw)이 같은 데이터로 다시 고를 수 있게 보관한다.
     def run(self) -> None:
         self._step("sync", "running")
         report = data_sync.sync(progress=self._say("sync"))
@@ -151,8 +157,30 @@ class Pipeline:
 
         self._step("candidates", "running")
         cand = candidates.next_candidates(draws)
+        cand["redraw_count"] = 0
         self.result["candidates"] = cand
+        self._draws = draws
         self._step("candidates", "warning" if cand["method"] == "random" else "done",
                    f"{cand['target_round']}회차용 · {cand['method_label']}")
         self.state = "done"
         self.current_message = "완료"
+
+    # 목적: 마지막 실행의 데이터로 후보 10개만 새로 고른다.
+    # 이유: 후보는 동점 묶음에서 무작위로 채워지므로, 수집·분석·백테스트(약 12초)를 다시 하지 않고도 새 한 세트를
+    #       볼 수 있게 한다(사용자 요청, 2026-11-09). 고르는 코드는 첫 산출·백테스트와 같은 next_candidates다.
+    # 방법: 잠금 안에서 실행 중이거나 후보를 만든 실행이 없으면 RedrawUnavailable을 낸다. 아니면 next_candidates를 다시
+    #       불러 결과의 후보만 바꾸고 재산출 횟수를 1 늘린다. 다른 결과(분석, 백테스트)와 진행 상태 문구는 그대로 둔다.
+    def redraw(self) -> dict:
+        with self._lock:
+            if self.state == "running":
+                raise RedrawUnavailable("분석이 진행 중입니다. 끝난 뒤 다시 눌러 주세요.")
+            if self._draws is None or not self.result or "candidates" not in self.result:
+                raise RedrawUnavailable("아직 후보를 만든 실행이 없습니다. '다시 실행'으로 분석을 먼저 끝내 주세요.")
+            count = self.result["candidates"].get("redraw_count", 0) + 1
+            cand = candidates.next_candidates(self._draws)
+            cand["redraw_count"] = count
+            self.result["candidates"] = cand
+            self.steps["candidates"]["state"] = "warning" if cand["method"] == "random" else "done"
+            self.steps["candidates"]["message"] = (
+                f"{cand['target_round']}회차용 · {cand['method_label']} · 재산출 {count}번째")
+            return cand

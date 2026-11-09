@@ -10,7 +10,9 @@ const POLL_MS = 1000;
 const RESULT_SECTIONS = ["candidate-section", "data-section", "backtest-section", "model-section", "analysis-section"];
 
 const rerunBtn = document.getElementById("rerun-btn");
+const redrawBtn = document.getElementById("redraw-btn");
 let pollTimer = null;
+let lastBacktest = null; // 재산출 뒤 판정 줄을 다시 그릴 때 쓴다
 
 // 목적: 서버에 요청을 보내고 JSON 결과를 돌려주되, 실패하면 원인을 알 수 있는 한글 메시지로 바꾼다.
 // 이유: 브라우저 기본 오류("Failed to fetch", "Unexpected token '<'")만으로는 무엇을 해야 할지 알 수 없었다.
@@ -123,6 +125,9 @@ function poll() {
   }, POLL_MS);
 }
 
+// 목적: 단계별 진행 상태와 상태 문구를 그리고, 실행 중에는 버튼을 막는다.
+// 이유: 실행 중에 다시 실행이나 번호 재산출을 누르면 반쯤 찬 결과와 섞일 수 있다.
+// 방법: 단계 목록을 새로 그리고, 실행 중이면 두 버튼을 모두 비활성화한다.
 function renderStatus(status) {
   document.getElementById("steps").replaceChildren(
     ...status.steps.map((s) =>
@@ -136,15 +141,19 @@ function renderStatus(status) {
   const msg = status.state === "running" ? status.message : status.state === "failed" ? status.message : "";
   document.getElementById("status-message").textContent = msg || "";
   rerunBtn.disabled = status.state === "running";
+  redrawBtn.disabled = status.state === "running";
 }
 
 // 목적: 끝난 절차의 결과를 받아 있는 만큼의 카드를 그린다.
 // 이유: 일부 단계만 끝난 실패 결과도 그 범위까지는 보여 줘야 하고, 오류 안내는 서버가 정한 문구를 따라야 한다.
 // 방법: /api/result를 읽어 결과 키가 있는 카드만 그린다. 예상하지 못한 오류면 서버의 상태 문구를 오류 색으로 보여 준다.
+//       재산출 때 판정 줄을 다시 그리도록 백테스트 결과를 기억하고, 이전 재산출 안내는 지운다.
 async function loadResult() {
   const data = await requestJson("/api/result", {}, "결과를 읽지 못했습니다.");
   renderStatus(data.status);
   const r = data.result || {};
+  lastBacktest = r.backtest || null;
+  document.getElementById("redraw-message").textContent = "";
   if (r.error) {
     document.getElementById("status-message").textContent =
       data.status.message || "예상하지 못한 오류로 중단했습니다.";
@@ -161,11 +170,12 @@ async function loadResult() {
 // 이유: 점수 차이가 오차 안이면 동점으로 보고 무작위로 고르므로(2026-11-09 결정), 몇 개가 점수로 정해졌는지와
 //       직전 번호가 들어 있어도 근거가 아니라는 점을 후보 바로 옆에서 밝혀야 한다(핵심 규칙 7, 8).
 // 방법: 서버가 준 firm, tie_pool, tie_z, previous_overlap을 문장으로 옮긴다. 계산은 하지 않는다.
-//       판정 줄에는 평균과 함께 95% 범위를 붙인다(감사 A-15).
+//       판정 줄에는 평균과 함께 95% 범위를 붙인다(감사 A-15). 재산출한 후보면 몇 번째인지 후보 줄에 밝힌다.
 function renderCandidates(c, bt) {
   document.getElementById("candidate-section").hidden = false;
   document.getElementById("target-round").textContent = `${c.target_round}회차용`;
-  document.getElementById("candidate-line").textContent = `후보 숫자: ${c.numbers.map(pad).join(", ")}`;
+  document.getElementById("candidate-line").textContent =
+    `후보 숫자: ${c.numbers.map(pad).join(", ")}` + (c.redraw_count ? ` (재산출 ${c.redraw_count}번째)` : "");
   document.getElementById("candidate-balls").replaceChildren(
     ...c.numbers.map((n) => el("div", { class: "ball" }, pad(n)))
   );
@@ -182,11 +192,11 @@ function renderCandidates(c, bt) {
     ties.textContent =
       `이번 10개 중 ${c.firm.length}개(${c.firm.map(pad).join(", ")})는 점수가 11위 번호보다 오차를 넘게 높아 넣었고, ` +
       `나머지 ${c.numbers.length - c.firm.length}개는 점수 차이가 오차 안인 번호 ${c.tie_pool}개 중에서 무작위로 골랐습니다. ` +
-      "다시 실행하면 무작위로 고른 자리는 바뀝니다.";
+      "번호 재산출을 누르면 무작위로 고른 자리는 바뀝니다.";
   } else {
     ties.textContent =
       `이번에는 점수 차이가 오차를 넘는 번호가 없어, 오차 안의 번호 ${c.tie_pool}개 중에서 10개를 무작위로 골랐습니다. ` +
-      "다시 실행하면 후보가 바뀝니다.";
+      "번호 재산출을 누르면 후보가 바뀝니다.";
   }
 
   const prev = document.getElementById("candidate-previous");
@@ -400,5 +410,29 @@ function renderAnalysis(items) {
   );
 }
 
+// 목적: 마지막 실행의 데이터로 후보 10개만 새로 받아 후보 카드와 모델 카드를 다시 그린다.
+// 이유: 후보는 동점 묶음에서 무작위로 채워지므로, 전체 절차(약 12초)를 다시 돌리지 않고 새 한 세트를 보게 한다.
+// 방법: /api/redraw를 부르는 동안 두 버튼을 막고, 성공하면 기억해 둔 백테스트로 판정 줄까지 다시 그린다.
+//       실패하면(실행 중, 실행 전, 서버 꺼짐) 서버나 requestJson이 준 안내를 후보 카드 아래에 보여 준다.
+async function redraw() {
+  const msg = document.getElementById("redraw-message");
+  redrawBtn.disabled = true;
+  rerunBtn.disabled = true;
+  msg.classList.remove("error");
+  try {
+    const data = await requestJson("/api/redraw", { method: "POST" }, "후보를 다시 고르지 못했습니다.");
+    renderStatus(data.status);
+    renderCandidates(data.candidates, lastBacktest);
+    renderModel(data.candidates);
+    msg.textContent = "";
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.classList.add("error");
+    redrawBtn.disabled = false;
+    rerunBtn.disabled = false;
+  }
+}
+
 rerunBtn.addEventListener("click", () => start(true));
+redrawBtn.addEventListener("click", redraw);
 start(false);

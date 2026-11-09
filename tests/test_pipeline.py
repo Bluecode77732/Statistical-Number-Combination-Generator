@@ -106,6 +106,40 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(p.steps["sync"]["state"], "warning")
         self.assertEqual(len(p.result["candidates"]["numbers"]), 10)
 
+    # 목적: 번호 재산출이 후보만 새로 고르고, 분석·백테스트 결과와 데이터는 그대로 두는지 확인한다.
+    # 이유: 재산출 버튼은 전체 절차를 다시 돌리지 않는다고 화면에 밝힌다. 횟수 표시와 규칙 5의 모양도 지켜야 한다.
+    # 방법: 한 번 돌린 뒤 두 번 재산출한다. 백테스트·분석 객체가 같은지, 후보가 10개·오름차순인지, 횟수가 1, 2로 느는지 본다.
+    def test_redraw_replaces_only_candidates(self):
+        p = pipeline.Pipeline()
+        p.run()
+        bt, an = p.result["backtest"], p.result["analysis"]
+        self.assertEqual(p.result["candidates"]["redraw_count"], 0)
+        for n in (1, 2):
+            c = p.redraw()
+            self.assertIs(p.result["candidates"], c)
+            self.assertEqual(c["redraw_count"], n)
+            self.assertEqual(len(set(c["numbers"])), 10)
+            self.assertEqual(c["numbers"], sorted(c["numbers"]))
+            self.assertEqual(c["target_round"], 131)
+            self.assertIn(f"재산출 {n}번째", p.status()["steps"][4]["message"])
+        self.assertIs(p.result["backtest"], bt)
+        self.assertIs(p.result["analysis"], an)
+        self.assertEqual(p.state, "done")
+
+    # 목적: 실행 전이나 실행 중에는 재산출을 거부하고 다음에 할 일을 알려 주는지 확인한다.
+    # 이유: 데이터가 없거나 결과가 반쯤 찬 상태에서 후보를 바꾸면 화면과 결과가 어긋난다.
+    # 방법: 새 Pipeline과, 한 번 돌린 뒤 상태만 running으로 바꾼 Pipeline에서 redraw를 부른다.
+    def test_redraw_refused_before_or_during_run(self):
+        with self.assertRaises(pipeline.RedrawUnavailable) as ctx:
+            pipeline.Pipeline().redraw()
+        self.assertIn("다시 실행", str(ctx.exception))
+        p = pipeline.Pipeline()
+        p.run()
+        p.state = "running"
+        with self.assertRaises(pipeline.RedrawUnavailable) as ctx:
+            p.redraw()
+        self.assertIn("진행 중", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
