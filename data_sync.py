@@ -23,6 +23,7 @@ class SyncReport:
     added: list[int] = field(default_factory=list)
     corrected: list[dict] = field(default_factory=list)
     rejected: list[dict] = field(default_factory=list)
+    removed: list[dict] = field(default_factory=list)  # 공식에 없어 지운 회차 {"round": n, "values": "..."}
     skipped_rows: list[dict] = field(default_factory=list)
     issues: dict = field(default_factory=dict)
     backup_path: Optional[str] = None
@@ -51,7 +52,10 @@ def _describe(d: LottoDraw) -> str:
 # 목적: 전용 엑셀을 공식 데이터 기준으로 최신 상태로 만든다.
 # 이유: 실행할 때마다 최신 회차를 시도하되, 수집이나 저장이 실패해도 기존 정상 데이터는 그대로 두어야 한다.
 # 방법: 1) 파일을 읽고 검증한다. 2) 빠진 회차·중복 회차·최근 10회 중 가장 이른 곳부터 공식 데이터를 받는다.
-#       3) 다른 회차는 공식 값으로 고치고 새 회차는 붙인다. 4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다.
+#       최근 10회는 1회부터 빠짐없이 이어진 마지막 회차 기준이라, 엑셀에 공식에 없는 큰 회차가 있어도 공식 최신을 확인한다.
+#       3) 다른 회차는 공식 값으로 고치고 새 회차는 붙인다. 공식 최신보다 큰 회차는 공식에 없으므로 지우고 기록한다(W-11).
+#       확인용으로 요청한 회차가 하나도 오지 않으면(빈 응답) "이미 최신"이 아니라 업데이트 실패로 본다(감사 A-04).
+#       4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다.
 #       엑셀이 아직 없으면 수집 전에 데이터 폴더에 쓸 수 있는지 확인해, 못 쓰면 수집하지 않고 바로 안내한다.
 #       시작할 때 이전 실행이 저장 중 종료되며 남긴 오래된 임시 파일도 함께 정리한다.
 def sync(
@@ -93,7 +97,10 @@ def sync(
         by_round.setdefault(d.round_no, d)  # 중복 회차는 첫 행을 남긴다
     seq = check_sequence(existing)
 
-    starts = [max(0, (max(by_round) if by_round else 0) - OVERLAP_ROUNDS)]
+    contiguous = 0  # 1회부터 빠짐없이 이어진 마지막 회차
+    while contiguous + 1 in by_round:
+        contiguous += 1
+    starts = [max(0, contiguous - OVERLAP_ROUNDS)]
     if seq["missing"]:
         starts.append(seq["missing"][0] - 1)
     if seq["duplicates"]:
@@ -116,6 +123,15 @@ def sync(
             report.messages.append(f"업데이트 실패: {exc} 분석할 데이터가 없어 진행할 수 없습니다.")
         return report
 
+    if by_round and fetched.latest_seen == 0:
+        report.draws = [by_round[n] for n in sorted(by_round)]
+        report.issues = check_sequence(report.draws)
+        report.status = "offline"
+        report.messages.append(
+            "업데이트 실패: 공식 사이트가 확인용으로 요청한 최근 회차를 하나도 돌려주지 않았습니다(빈 응답). "
+            f"사이트가 바뀌었을 수 있습니다. 기존 데이터({report.latest_round}회차까지)로 진행하니, 잠시 뒤 다시 실행해 보세요.")
+        return report
+
     report.rejected = fetched.rejected
     for r in fetched.rejected:
         report.messages.append(f"공식 응답 중 {r['round']}회차를 저장하지 않음: {r['reason']}")
@@ -134,13 +150,21 @@ def sync(
         by_round[d.round_no] = d
     if not exists and report.added:
         new_logs.append([stamp, "", "생성", f"공식 데이터 1~{max(report.added)}회차로 새로 만듦"])
+    for n in [n for n in sorted(by_round) if n > fetched.latest_seen]:
+        gone = by_round.pop(n)
+        report.removed.append({"round": n, "values": _describe(gone)})
+        new_logs.append([stamp, n, "공식에 없는 회차 삭제", _describe(gone)])
+        report.messages.append(
+            f"엑셀의 {n}회차는 공식 사이트(최신 {fetched.latest_seen}회차)에 없어 분석에서 빼고 엑셀에서도 지웁니다. "
+            "지우기 전 파일은 백업 폴더에 남깁니다.")
 
     merged = [by_round[n] for n in sorted(by_round)]
     report.draws = merged
     report.issues = check_sequence(merged)
     # 날짜가 없던 기존 행(예전 형식)에 공식 날짜만 채운 경우도 저장 대상이다
     filled_dates = any(old.draw_date is None and by_round[old.round_no].draw_date for old in existing)
-    changed = bool(report.added or report.corrected or seq["duplicates"] or report.skipped_rows or filled_dates)
+    changed = bool(report.added or report.corrected or report.removed or seq["duplicates"] or report.skipped_rows
+                   or filled_dates)
 
     if not merged:
         report.messages.append("공식 사이트에서 받은 회차가 없습니다. 사이트가 바뀌었을 수 있습니다.")

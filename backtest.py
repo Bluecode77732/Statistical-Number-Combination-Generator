@@ -15,7 +15,7 @@ from excel_loader import LottoDraw
 from models import (
     PICK,
     LogisticModel,
-    ModelError,
+    describe_model_error,
     build_features,
     random_candidates,
     select_candidates,
@@ -63,6 +63,7 @@ def _summarize(key: str, matches: list[int]) -> dict:
 # 방법: 회차 t마다 1~t−1회로 로지스틱 회귀를 갱신(직전 가중치에서 이어서 학습)하고 후보 10개를 만든다.
 #       같은 회차에 무작위 기준선 후보도 만든다. 예측과 실제는 따로 모으고, 집계 때만 맞춰 본다.
 #       마지막에 전체 데이터로 학습한 모델을 같은 회차들에 다시 적용해(표본 내 성능) 과적합 여부를 본다.
+#       모델 단계의 오류는 종류와 상관없이 그 회차만 model_errors에 남기고 기준선은 계속한다(감사 A-01).
 def run_backtest(
     draws: list[LottoDraw],
     start_round: int = START_ROUND,
@@ -99,8 +100,8 @@ def run_backtest(
             predictions.append({"round": ordered[t].round_no, "model": "logistic",
                                 "model_label": MODEL_LABELS["logistic"], "candidates": lr})
             matches["logistic"].append(len(actual & set(lr)))
-        except ModelError as exc:
-            model_errors.append(f"{ordered[t].round_no}회차: {exc}")
+        except Exception as exc:  # noqa: BLE001 - 한 회차의 모델 실패가 백테스트 전체를 멈추지 않게 한다(규칙 10)
+            model_errors.append(f"{ordered[t].round_no}회차: {describe_model_error(exc)}")
         if step % 100 == 0:
             say(f"백테스트 중: {ordered[t].round_no}회차 ({step + 1}/{len(tests)})")
 
@@ -118,8 +119,8 @@ def run_backtest(
         is_matches = [len(set(ordered[t].numbers) & set(select_candidates(*full.logits_with_cov(X[t]), rng_is)["numbers"]))
                       for t in tests]
         in_sample = round(sum(is_matches) / len(is_matches), 4)
-    except ModelError as exc:
-        model_errors.append(f"전체 학습: {exc}")
+    except Exception as exc:  # noqa: BLE001 - 진단용 값이라 실패해도 백테스트 결과는 낸다
+        model_errors.append(f"전체 학습: {describe_model_error(exc)}")
 
     return {
         "ran": True,

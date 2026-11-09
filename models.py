@@ -30,6 +30,16 @@ class ModelError(Exception):
     """학습이나 점수 계산이 수치적으로 실패했을 때 발생."""
 
 
+# 목적: 모델 단계에서 난 오류를 화면에 보일 한국어 문장으로 바꾼다.
+# 이유: ModelError가 아닌 오류에서도 무작위 대체와 그 이유를 보여야 한다(핵심 규칙 10, 감사 A-01).
+#       시스템 오류문(영문)을 그대로 싣지 않는다(감사 A-16).
+# 방법: ModelError면 그 문장을 쓰고, 그 밖의 오류는 종류 이름만 밝힌다.
+def describe_model_error(exc: Exception) -> str:
+    if isinstance(exc, ModelError):
+        return str(exc)
+    return f"예상하지 못한 계산 오류가 났습니다({type(exc).__name__})."
+
+
 # 목적: 회차별·번호별 특징값과 정답을 한 번에 만든다.
 # 이유: 백테스트는 회차마다 학습하므로 특징값을 매번 새로 세면 느리고, 계산 방식이 달라질 위험도 있다.
 # 방법: X[i]는 draws[:i]만으로 만든 "i번째 회차(0부터) 예측용" 특징값이다. i = len(draws)는 다음 회차용이다.
@@ -108,6 +118,7 @@ class LogisticModel:
     #       공분산은 번호 간 점수 차이가 오차보다 큰지 판단하는 데 쓴다(select_candidates).
     # 방법: 학습 데이터의 평균·표준편차로만 표준화하고, L2 정규화를 건 뉴턴법으로 푼다.
     #       init(직전 가중치)을 주면 거기서 시작해 백테스트의 반복 학습을 빠르게 한다.
+    #       뉴턴 단계의 방정식을 풀지 못하면 ModelError로 바꿔 무작위 대체로 이어지게 한다(감사 A-01).
     #       공분산은 최종 가중치에서 다시 계산한 헤시안(정규화 포함)의 역행렬이다. 부트스트랩과 비교해 거의 같았다.
     def fit(self, X: np.ndarray, y: np.ndarray, init: np.ndarray | None = None) -> "LogisticModel":
         if len(X) == 0 or y.min() == y.max():
@@ -123,7 +134,10 @@ class LogisticModel:
             p = 1.0 / (1.0 + np.exp(-np.clip(A @ w, -30, 30)))
             grad = A.T @ (p - y) + reg * w
             hess = (A * (p * (1 - p))[:, None]).T @ A + np.diag(reg)
-            step = np.linalg.solve(hess, grad)
+            try:
+                step = np.linalg.solve(hess, grad)
+            except np.linalg.LinAlgError as exc:
+                raise ModelError("학습 중 방정식을 풀지 못했습니다.") from exc
             w = w - step
             if np.max(np.abs(step)) < self.tol:
                 break

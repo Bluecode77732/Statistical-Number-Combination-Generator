@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 from openpyxl import load_workbook
 
 import collector
@@ -88,6 +89,37 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("다시 실행", p.current_message)
         self.assertIn("error", p.result)
         self.assertIsNotNone(p.finished_at)
+
+    # 목적: 모델이 LinAlgError를 내도 파이프라인이 끝까지 돌고 무작위 후보와 이유를 보여 주는지 확인한다.
+    # 이유: 재현 E5에서 결과가 error 하나만 남고 백테스트 단계가 "진행 중"에 멈췄다(감사 A-01, 핵심 규칙 10).
+    # 방법: fit이 LinAlgError를 내도록 바꿔 run을 부르고, 상태와 단계, 후보, 분석 결과를 본다.
+    def test_model_linalg_error_falls_back_to_random(self):
+        with mock.patch.object(pipeline.backtest.LogisticModel, "fit", side_effect=np.linalg.LinAlgError("x")):
+            p = pipeline.Pipeline()
+            p.run()
+        self.assertEqual(p.state, "done")
+        self.assertEqual(p.result["candidates"]["method"], "random")
+        self.assertIn("LinAlgError", p.result["candidates"]["fallback_reason"])
+        self.assertEqual(p.steps["backtest"]["state"], "warning")
+        self.assertEqual(p.steps["candidates"]["state"], "warning")
+        self.assertEqual(len(p.result["analysis"]), 9)
+
+    # 목적: 도중에 예상하지 못한 오류가 나도 끝난 단계의 결과를 남기고 무작위 후보를 내는지 확인한다.
+    # 이유: 예전에는 결과를 error 하나로 덮어써 앞 단계 결과까지 사라졌다(감사 A-01).
+    # 방법: 백테스트가 RuntimeError를 내도록 바꿔 _run_safely를 부르고 결과 키, 단계 상태, 후보, 문구를 본다.
+    def test_unexpected_error_keeps_results_and_gives_random_candidates(self):
+        p = pipeline.Pipeline()
+        with mock.patch.object(pipeline.backtest, "run_backtest", side_effect=RuntimeError("boom")):
+            p._run_safely()
+        self.assertEqual(p.state, "failed")
+        for key in ("sync", "validation", "analysis", "error", "candidates"):
+            self.assertIn(key, p.result)
+        self.assertEqual(p.steps["backtest"]["state"], "failed")
+        self.assertEqual(p.steps["candidates"]["state"], "warning")
+        c = p.result["candidates"]
+        self.assertEqual((c["method"], len(set(c["numbers"]))), ("random", 10))
+        self.assertIn("무작위로 대체", p.current_message)
+        self.assertEqual(p.redraw()["redraw_count"], 1)  # 대체 후보도 재산출할 수 있다
 
     def test_offline_first_run_stops_cleanly(self):
         self.server.fail_times = 99

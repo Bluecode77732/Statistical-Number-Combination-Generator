@@ -43,6 +43,18 @@ class CollectError(Exception):
 class FetchResult:
     draws: list[LottoDraw]
     rejected: list[dict]  # 받았지만 검증에 실패해 버린 회차 {"round": n, "reason": "..."}
+    latest_seen: int = 0  # 응답에서 본 가장 큰 회차(불량 회차 포함). 응답이 비면 0
+
+
+# 목적: 응답 항목에서 회차 번호만 꺼낸다.
+# 이유: 검증에 실패한 회차도 번호가 읽히면 커서를 넘기고 공식 최신 회차를 아는 데 써야 한다(감사 A-06).
+# 방법: ltEpsd가 1 이상의 정수로 읽히면 그 값을, 아니면 None을 돌려준다.
+def _round_of(item) -> Optional[int]:
+    try:
+        n = int(item["ltEpsd"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
 
 
 # 목적: 주어진 주소를 GET으로 요청해 응답 본문을 돌려준다.
@@ -132,6 +144,8 @@ def parse_item(item: dict) -> LottoDraw:
 # 이유: 실행할 때마다 빠진 회차만 받으려면, 이미 가진 마지막 회차 이후를 순서대로 가져와야 한다.
 # 방법: latest 커서로 10개씩 앞으로 넘기다 빈 응답에서 멈춘다. 커서 0은 빈 응답이라 처음엔 center로 1~10회를 받는다.
 #       응답에 실제로 있는 회차만 돌려주며, 확인되지 않은 회차를 만들어 넣지 않는다.
+#       검증에 실패한 회차도 번호가 읽히면 커서를 그 뒤로 넘겨, 불량 쪽 하나 때문에 뒤 회차를 놓치지 않는다(감사 A-06).
+#       응답에서 본 가장 큰 회차를 latest_seen으로 남겨, 호출한 쪽이 빈 응답과 공식에 없는 회차를 가려낼 수 있게 한다.
 def fetch_after(
     after_round: int,
     http_get: Optional[HttpGet] = None,
@@ -143,6 +157,7 @@ def fetch_after(
     collected: dict[int, LottoDraw] = {}
     rejected: list[dict] = []
     cursor = after_round
+    latest_seen = 0
 
     for page in range(MAX_PAGES):
         if page > 0:
@@ -154,6 +169,10 @@ def fetch_after(
 
         newest_in_page = cursor
         for item in items:
+            seen = _round_of(item) if isinstance(item, dict) else None
+            if seen is not None:
+                latest_seen = max(latest_seen, seen)
+                newest_in_page = max(newest_in_page, seen)
             try:
                 draw = parse_item(item)
             except ValueError as exc:
@@ -162,7 +181,6 @@ def fetch_after(
                 continue
             if draw.round_no > after_round:
                 collected[draw.round_no] = draw
-            newest_in_page = max(newest_in_page, draw.round_no)
 
         if newest_in_page <= cursor:  # 더 나아가지 못했으면 끝
             break
@@ -172,4 +190,4 @@ def fetch_after(
     else:
         raise CollectError("공식 사이트 응답이 끝나지 않습니다. 사이트가 바뀌었을 수 있습니다.", "format")
 
-    return FetchResult(draws=[collected[n] for n in sorted(collected)], rejected=rejected)
+    return FetchResult(draws=[collected[n] for n in sorted(collected)], rejected=rejected, latest_seen=latest_seen)

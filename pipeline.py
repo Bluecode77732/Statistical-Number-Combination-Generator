@@ -40,6 +40,7 @@ class Pipeline:
         self.current_message = ""
         self.result: Optional[dict] = None
         self._draws: Optional[list] = None  # 마지막 실행이 후보를 만들 때 쓴 데이터 (재산출용)
+        self._run_draws: Optional[list] = None  # 이번 실행이 수집 뒤 쓰는 데이터 (도중 오류 때 대체 후보용)
         self.started_at: Optional[str] = None
         self.finished_at: Optional[str] = None
 
@@ -76,15 +77,37 @@ class Pipeline:
         return lambda msg: self._step(key, "running", msg)
 
     # 목적: run을 돌리고, 예상하지 못한 오류가 나도 실행 상태를 끝으로 바꾼다.
-    # 이유: 스레드가 조용히 죽으면 화면이 "진행 중"에서 영원히 멈춘다.
-    # 방법: 모든 예외를 잡아 failed 상태와 다음에 할 일이 담긴 메시지로 바꾸고, 끝난 시각은 항상 남긴다.
+    # 이유: 스레드가 조용히 죽으면 화면이 "진행 중"에서 영원히 멈춘다. 예전에는 결과를 error 하나로 덮어써
+    #       앞 단계 결과와 후보가 모두 사라졌다(감사 A-01, 핵심 규칙 10).
+    # 방법: 모든 예외를 잡아 failed 상태와 다음에 할 일이 담긴 메시지로 바꾼다. 이미 끝난 단계의 결과는 그대로 두고
+    #       error만 덧붙인다. 진행 중이던 단계는 failed, 남은 단계는 skipped로 바꾼다. 수집이 끝나 데이터가 있는데
+    #       후보가 아직 없으면 무작위 대체 후보를 이유와 함께 넣는다. 끝난 시각은 항상 남긴다.
     def _run_safely(self) -> None:
         try:
             self.run()
         except Exception:  # noqa: BLE001 - 예상 못 한 오류도 화면에 남겨야 한다
             self.state = "failed"
-            self.current_message = "예상하지 못한 오류로 중단했습니다. 프로그램을 닫고 다시 실행해 보세요."
-            self.result = {"error": traceback.format_exc(limit=5)}
+            self.result = self.result or {}
+            self.result["error"] = traceback.format_exc(limit=5)
+            for step in self.steps.values():
+                if step["state"] == "running":
+                    step["state"], step["message"] = "failed", "예상하지 못한 오류로 멈춤"
+                elif step["state"] == "pending":
+                    step["state"], step["message"] = "skipped", "앞 단계 오류로 건너뜀"
+            replaced = False
+            if "candidates" not in self.result and self._run_draws:
+                cand = candidates.fallback_candidates(
+                    self._run_draws, "분석 도중 예상하지 못한 오류가 나서 무작위로 대체했습니다.")
+                cand["redraw_count"] = 0
+                self.result["candidates"] = cand
+                self._draws = self._run_draws
+                self.steps["candidates"]["state"] = "warning"
+                self.steps["candidates"]["message"] = f"{cand['target_round']}회차용 · {cand['method_label']}"
+                replaced = True
+            self.current_message = (
+                "예상하지 못한 오류로 중단했습니다. 끝난 단계의 결과는 남겨 두었습니다"
+                + (" (후보는 무작위로 대체)" if replaced else "")
+                + ". 프로그램을 닫고 다시 실행해 보세요.")
         finally:
             self.finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -92,7 +115,9 @@ class Pipeline:
     # 이유: 업데이트나 백테스트가 실패해도, 가능한 범위의 결과(기존 데이터 분석, 무작위 대체 후보)는 보여 줘야 한다.
     # 방법: 업데이트 실패 중 데이터가 아예 없는 경우만 중단하고, 나머지 실패는 상태와 메시지로 남긴 채 다음 단계로 간다.
     #       저장하지 못했거나 건너뛴 엑셀 행이 있으면 단계 문구에도 밝혀, "업데이트함"·"이상 없음"으로 오해하지 않게 한다.
-    #       후보를 만든 데이터는 재산출(redraw)이 같은 데이터로 다시 고를 수 있게 보관한다.
+    #       후보를 만든 데이터는 재산출(redraw)이 같은 데이터로 다시 고를 수 있게 보관한다. 수집 직후의 데이터는
+    #       도중에 예상하지 못한 오류가 나도 _run_safely가 대체 후보를 낼 수 있게 따로 둔다.
+    #       공식에 없어 지운 회차(removed)도 수집 결과에 담아 화면이 알릴 수 있게 한다.
     def run(self) -> None:
         self._step("sync", "running")
         report = data_sync.sync(progress=self._say("sync"))
@@ -101,7 +126,7 @@ class Pipeline:
             "first_round": report.draws[0].round_no if report.draws else 0,
             "first_date": report.draws[0].draw_date if report.draws else None,
             "latest_date": report.draws[-1].draw_date if report.draws else None,
-            "added": report.added, "corrected": report.corrected, "rejected": report.rejected,
+            "added": report.added, "corrected": report.corrected, "rejected": report.rejected, "removed": report.removed,
             "backup_path": report.backup_path, "saved": report.saved, "messages": report.messages,
         }
         sync_labels = {"created": "새로 만듦", "updated": "업데이트함", "up_to_date": "이미 최신",
@@ -119,6 +144,7 @@ class Pipeline:
             return
 
         draws = report.draws
+        self._run_draws = draws
         self._step("validate", "running")
         issues = report.issues
         problems = []

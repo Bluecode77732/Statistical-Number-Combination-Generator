@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import candidates
 import models
 from tests.helpers import make_draws
@@ -46,6 +48,17 @@ class CandidatesTest(unittest.TestCase):
         self.assertIn("최소", c["fallback_reason"])
         self.check_shape(c["numbers"])
         self.assertEqual(c["previous_round"], 10)  # 대체 후보에도 직전 회차 겹침을 붙인다
+
+    # 목적: ModelError가 아닌 오류(재현 E4의 LinAlgError)에도 무작위 10개와 대체 이유를 내는지 확인한다.
+    # 이유: 예전에는 예외가 그대로 퍼져 후보 없이 끝났다(감사 A-01, 핵심 규칙 10).
+    # 방법: fit이 LinAlgError를 내도록 바꿔 후보를 만들고, 방식·이유·모양·직전 회차 겹침을 본다.
+    def test_fallback_when_unexpected_error(self):
+        with mock.patch.object(models.LogisticModel, "fit", side_effect=np.linalg.LinAlgError("singular")):
+            c = candidates.next_candidates(make_draws(200))
+        self.assertEqual(c["method"], "random")
+        self.assertIn("LinAlgError", c["fallback_reason"])
+        self.check_shape(c["numbers"])
+        self.assertEqual(c["previous_round"], 200)
 
     def test_fallback_when_model_fails(self):
         with mock.patch.object(models.LogisticModel, "fit", side_effect=models.ModelError("발산")):

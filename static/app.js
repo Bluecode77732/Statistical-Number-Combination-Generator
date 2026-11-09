@@ -218,6 +218,10 @@ function renderCandidates(c, bt) {
     : "백테스트 결과가 없어 모델 성능을 확인하지 못했습니다.";
 }
 
+// 목적: 데이터 카드(상태, 범위, 추가·수정·삭제 회차, 파일 위치, 검증, 알림)를 그린다.
+// 이유: 엑셀이 공식 데이터와 어떻게 맞춰졌는지 사용자가 확인할 수 있어야 한다(핵심 규칙 3, 4).
+//       공식에 없어 지운 회차는 2026-11-10부터 따로 밝힌다(W-11).
+// 방법: 서버의 sync, validation 결과를 항목·표로 옮긴다. 지운 회차가 있을 때만 그 항목과 표를 넣는다.
 function renderData(s, v) {
   document.getElementById("data-section").hidden = false;
   const labels = {
@@ -232,6 +236,7 @@ function renderData(s, v) {
     ["데이터 범위", s.latest_round ? `${s.first_round}회 (${s.first_date || "-"}) ~ ${s.latest_round}회 (${s.latest_date || "-"})` : "-"],
     ["이번에 추가", s.added.length ? `${s.added.length}개 회차 (${s.added[0]}~${s.added[s.added.length - 1]}회)` : "없음"],
     ["공식 값으로 수정", s.corrected.length ? `${s.corrected.length}개 회차` : "없음"],
+    ...(s.removed && s.removed.length ? [["공식에 없어 삭제", `${s.removed.length}개 회차 (${s.removed.map((r) => r.round).join(", ")}회)`]] : []),
     ["엑셀 파일", s.store_path],
     ["백업", s.backup_path || "변경이 없어 만들지 않음"],
   ];
@@ -246,6 +251,9 @@ function renderData(s, v) {
   extra.replaceChildren();
   if (s.corrected.length) {
     extra.append(el("h3", {}, "수정한 회차"), newTable(["회차", "기존 값", "공식 값"], s.corrected.map((c) => [c.round, c.before, c.after])));
+  }
+  if (s.removed && s.removed.length) {
+    extra.append(el("h3", {}, "공식에 없어 지운 회차"), newTable(["회차", "엑셀에 있던 값"], s.removed.map((r) => [r.round, r.values])));
   }
   if (s.messages.length) {
     extra.append(el("h3", {}, "알림"), el("ul", { class: "messages" }, s.messages.map((m) => el("li", {}, m))));

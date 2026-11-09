@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import backtest
 import models
 from tests.helpers import make_draws
@@ -59,6 +61,16 @@ class BacktestTest(unittest.TestCase):
     def test_not_enough_data(self):
         r = backtest.run_backtest(make_draws(50), start_round=101)
         self.assertFalse(r["ran"])
+
+    # 목적: ModelError가 아닌 오류에도 백테스트가 멈추지 않고 기준선과 오류 기록을 남기는지 확인한다.
+    # 이유: 예전에는 LinAlgError가 퍼져 백테스트 단계가 "진행 중"에 멈췄다(감사 A-01, E5).
+    # 방법: fit이 LinAlgError를 내도록 바꿔 백테스트를 돌리고 요약과 model_errors를 본다.
+    def test_unexpected_model_error_keeps_baseline(self):
+        with mock.patch.object(models.LogisticModel, "fit", side_effect=np.linalg.LinAlgError("singular")):
+            r = backtest.run_backtest(self.draws, start_round=101)
+        self.assertTrue(r["ran"])
+        self.assertEqual([s["key"] for s in r["summaries"]], ["random"])
+        self.assertIn("LinAlgError", r["model_errors"][0])
 
     def test_model_failure_keeps_baseline(self):
         with mock.patch.object(models.LogisticModel, "fit", side_effect=models.ModelError("boom")):

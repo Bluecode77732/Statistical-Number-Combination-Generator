@@ -24,7 +24,9 @@ from pipeline import Pipeline, RedrawUnavailable
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="로또 번호 분석 프로그램", description="로컬 전용 로또 데이터 분석 및 후보 숫자 도구")
+# /docs, /redoc 페이지는 외부 CDN에서 스크립트를 불러오고 화면이 쓰지도 않으므로 끈다(핵심 규칙 2, 감사 A-08).
+app = FastAPI(title="로또 번호 분석 프로그램", description="로컬 전용 로또 데이터 분석 및 후보 숫자 도구",
+              docs_url=None, redoc_url=None, openapi_url=None)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

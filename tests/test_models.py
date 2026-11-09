@@ -1,5 +1,6 @@
 import random
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -127,6 +128,19 @@ class LogisticTest(unittest.TestCase):
         self.assertEqual(logits.shape, (45,))
         self.assertEqual(cov.shape, (45, 45))
         np.testing.assert_allclose(1 / (1 + np.exp(-logits)), m.scores(X[:45]))
+
+    # 목적: 뉴턴 단계의 방정식을 풀지 못하면 LinAlgError 대신 ModelError가 나는지 확인한다.
+    # 이유: ModelError만 무작위 대체로 이어지던 시절의 구멍(감사 A-01, E4)을 모델 쪽에서도 막는다.
+    # 방법: np.linalg.solve가 LinAlgError를 내도록 바꿔 fit을 부른다. 화면용 문장도 한국어인지 본다.
+    def test_linalg_error_becomes_model_error(self):
+        rng = np.random.default_rng(6)
+        X = rng.normal(size=(200, 2))
+        y = (rng.random(200) < 0.3).astype(float)
+        with mock.patch.object(models.np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")):
+            with self.assertRaises(models.ModelError) as ctx:
+                models.LogisticModel().fit(X, y)
+        self.assertIn("방정식", models.describe_model_error(ctx.exception))
+        self.assertIn("ZeroDivisionError", models.describe_model_error(ZeroDivisionError()))
 
     def test_single_class_raises(self):
         with self.assertRaises(models.ModelError):

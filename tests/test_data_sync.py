@@ -126,6 +126,51 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(report.status, "failed")
         self.assertFalse(self.path.exists())
 
+    # 목적: 기존 엑셀이 있는데 공식 사이트가 빈 목록을 주면 "이미 최신"이 아니라 업데이트 실패로 보는지 확인한다.
+    # 이유: 확인한 것이 없는데 "이미 최신"으로 보여 사이트 변경을 놓칠 수 있었다(감사 A-04, 재현 E1).
+    # 방법: 한 번 만들고, 모든 회차를 지운 가짜 서버로 다시 돌린다. 상태, 안내, 파일·백업이 그대로인지 본다.
+    def test_empty_official_response_is_a_failure(self):
+        self.sync()
+        before = self.path.read_bytes()
+        self.server.draws = {}
+        report = self.sync()
+        self.assertEqual(report.status, "offline")
+        self.assertIn("빈 응답", report.messages[-1])
+        self.assertEqual(report.latest_round, 40)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.backups(), [])
+
+    # 목적: 한 쪽(10회차)이 전부 불량이어도 그 뒤 회차를 계속 받는지 확인한다.
+    # 이유: 불량 쪽에서 수집이 멈춰 뒤 회차를 받지 못하고 최신 회차가 낮게 보였다(감사 A-06, 재현 E9).
+    # 방법: 11~20회 응답을 모두 망가뜨린 서버로 처음 만든다. 21~40회가 들어오고 11~20회는 거부·빠짐으로 남는지 본다.
+    def test_bad_page_does_not_stop_collection(self):
+        for r in range(11, 21):
+            self.server.bad_rounds[r] = {"tm1WnNo": 99}
+        report = self.sync()
+        self.assertEqual(report.latest_round, 40)
+        self.assertEqual(sorted(r["round"] for r in report.rejected), list(range(11, 21)))
+        self.assertEqual(report.issues["missing"], list(range(11, 21)))
+
+    # 목적: 공식에 없는 회차가 엑셀에 있으면 분석에서 빼고, 백업한 뒤 엑셀에서도 지우고 기록하는지 확인한다.
+    # 이유: 손으로 넣은 9999회가 남아 분석에 쓰이고 다음 후보 대상이 10000회가 되었다(감사 A-07, 재현 E10).
+    #       사용자 결정(2026-11-10): 분석에서 빼고 엑셀에서도 제거.
+    # 방법: 만든 엑셀에 9999회를 넣어 저장한 뒤 다시 돌리고, 결과·파일·변경기록·백업을 본다.
+    def test_round_missing_from_official_source_is_removed(self):
+        self.sync()
+        stored = excel_store.read_store(self.path)
+        fake = LottoDraw(9999, [1, 2, 3, 4, 5, 6], 7, "2099-01-01")
+        excel_store.write_store(self.path, stored.draws + [fake], stored.log_rows)
+        report = self.sync()
+        self.assertEqual(report.status, "updated")
+        self.assertEqual([r["round"] for r in report.removed], [9999])
+        self.assertEqual(report.latest_round, 40)
+        self.assertEqual(report.issues["missing"], [])
+        again = excel_store.read_store(self.path)
+        self.assertNotIn(9999, [d.round_no for d in again.draws])
+        self.assertTrue(any(row[2] == "공식에 없는 회차 삭제" for row in again.log_rows))
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual(self.sync().status, "up_to_date")
+
     def test_unconfirmed_rounds_are_never_written(self):
         report = self.sync()
         self.assertEqual(report.latest_round, max(d.round_no for d in self.draws))
