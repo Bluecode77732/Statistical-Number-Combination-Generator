@@ -46,8 +46,13 @@ class BacktestTest(unittest.TestCase):
             summary = next(s for s in r["summaries"] if s["key"] == key)
             self.assertEqual([hits.count(m) for m in range(7)], summary["distribution"])
 
+    # 목적: 무작위 이론값과 화면 설명에 쓰는 95% 기준값이 맞는지 확인한다.
+    # 이유: 95% 범위와 판정의 정의를 화면에 적을 때 서버 값과 같아야 한다(감사 A-03).
+    # 방법: 이론 평균·분포 합을 직접 계산하고, 백테스트 결과의 theory.z95가 Z95인지 본다.
     def test_theory_values(self):
         self.assertAlmostEqual(backtest.THEORY_MEAN, 10 * 6 / 45)
+        r = backtest.run_backtest(self.draws, start_round=101)
+        self.assertEqual(r["theory"]["z95"], backtest.Z95)  # 화면의 95% 범위·판정 설명에 쓴다 (A-03)
         self.assertAlmostEqual(sum(backtest.THEORY_PMF), 1.0)
         self.assertAlmostEqual(sum(m * p for m, p in enumerate(backtest.THEORY_PMF)), backtest.THEORY_MEAN)
 

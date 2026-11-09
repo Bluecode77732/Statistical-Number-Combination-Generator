@@ -13,6 +13,9 @@ D = [
 
 
 class AnalysisTest(unittest.TestCase):
+    # 목적: 빈도 항목의 출현 수, 보너스 수, 기대값, 회차 수를 손으로 센 값과 비교한다.
+    # 이유: 화면이 기대값을 "전체 기간 합계"로 밝히려면 회차 수와 회차당 기대값이 결과에 있어야 한다(감사 A-02).
+    # 방법: 3회차짜리 작은 데이터로 계산한다.
     def test_frequency(self):
         r = frequency.compute(D)
         rows = {x["number"]: x for x in r["rows"]}
@@ -20,6 +23,8 @@ class AnalysisTest(unittest.TestCase):
         self.assertEqual(rows[4]["count"], 0)
         self.assertEqual(rows[7]["bonus_count"], 1)
         self.assertEqual(r["expected"], round(3 * 6 / 45, 2))
+        self.assertEqual(r["rounds"], 3)                 # 기대값이 전체 기간 값임을 화면이 밝히는 데 쓴다 (A-02)
+        self.assertEqual(r["per_round"], round(6 / 45, 4))
 
     def test_odd_even(self):
         rows = {x["odd"]: x["rounds"] for x in odd_even.compute(D)["rows"]}

@@ -21,15 +21,31 @@ class CandidatesTest(unittest.TestCase):
         self.assertIsNone(c["fallback_reason"])
         self.assertEqual(len(c["weights"]), len(models.FEATURE_NAMES) + 1)
 
+    # 목적: 후보 결과에 확정 번호, 동점 묶음 크기, 직전 회차와의 겹침이 올바르게 담기는지 확인한다.
+    # 이유: 화면이 이 값으로 선정 방식과 "직전 번호는 근거가 아님"을 설명한다.
+    # 방법: 200회 가짜 데이터로 후보를 만들고, 겹침을 직접 다시 계산해 비교한다.
+    def test_tie_and_previous_round_fields(self):
+        draws = make_draws(200)
+        c = candidates.next_candidates(draws)
+        self.assertTrue(set(c["firm"]) <= set(c["numbers"]))
+        self.assertGreaterEqual(c["tie_pool"], 10 - len(c["firm"]))
+        self.assertEqual(c["tie_z"], models.TIE_Z)
+        self.assertEqual(c["previous_round"], 200)
+        self.assertEqual(c["previous_overlap"], sorted(set(draws[-1].numbers) & set(c["numbers"])))
+
     def test_one_set_only(self):
         c = candidates.next_candidates(make_draws(200))
         self.assertIsInstance(c["numbers"][0], int)  # 조합 여러 개가 아니라 숫자 한 세트
 
+    # 목적: 데이터가 적으면 무작위 대체 후보를 내고, 그때도 직전 회차 겹침을 붙이는지 확인한다.
+    # 이유: 핵심 규칙 10의 대체 동작이며, 화면의 직전 번호 설명은 대체 후보에도 나온다.
+    # 방법: 10회 가짜 데이터로 후보를 만든다.
     def test_fallback_when_too_few_rounds(self):
         c = candidates.next_candidates(make_draws(10))
         self.assertEqual(c["method"], "random")
         self.assertIn("최소", c["fallback_reason"])
         self.check_shape(c["numbers"])
+        self.assertEqual(c["previous_round"], 10)  # 대체 후보에도 직전 회차 겹침을 붙인다
 
     def test_fallback_when_model_fails(self):
         with mock.patch.object(models.LogisticModel, "fit", side_effect=models.ModelError("발산")):

@@ -157,6 +157,10 @@ async function loadResult() {
   if (r.analysis) renderAnalysis(r.analysis);
 }
 
+// 목적: 후보 10개와 그 선정 방식, 직전 회차와의 겹침, 백테스트 판정을 그린다.
+// 이유: 점수 차이가 오차 안이면 동점으로 보고 무작위로 고르므로(2026-11-09 결정), 몇 개가 점수로 정해졌는지와
+//       직전 번호가 들어 있어도 근거가 아니라는 점을 후보 바로 옆에서 밝혀야 한다(핵심 규칙 7, 8).
+// 방법: 서버가 준 firm, tie_pool, tie_z, previous_overlap을 문장으로 옮긴다. 계산은 하지 않는다.
 function renderCandidates(c, bt) {
   document.getElementById("candidate-section").hidden = false;
   document.getElementById("target-round").textContent = `${c.target_round}회차용`;
@@ -167,7 +171,32 @@ function renderCandidates(c, bt) {
   const method = document.getElementById("candidate-method");
   method.textContent = c.fallback_reason
     ? `선정 방식: ${c.method_label} — ${c.fallback_reason}`
-    : `선정 방식: ${c.method_label} (전체 데이터로 학습한 모델의 점수 상위 10개, 동점은 무작위)`;
+    : `선정 방식: ${c.method_label}. 전체 데이터로 학습한 모델의 점수를 쓰되, 두 번호의 점수 차이가 ` +
+      `그 차이의 표준오차 × ${c.tie_z} 이하이면(95% 기준) 같은 점수로 봅니다.`;
+
+  const ties = document.getElementById("candidate-ties");
+  if (c.fallback_reason) {
+    ties.textContent = "";
+  } else if (c.firm.length) {
+    ties.textContent =
+      `이번 10개 중 ${c.firm.length}개(${c.firm.map(pad).join(", ")})는 점수가 11위 번호보다 오차를 넘게 높아 넣었고, ` +
+      `나머지 ${c.numbers.length - c.firm.length}개는 점수 차이가 오차 안인 번호 ${c.tie_pool}개 중에서 무작위로 골랐습니다. ` +
+      "다시 실행하면 무작위로 고른 자리는 바뀝니다.";
+  } else {
+    ties.textContent =
+      `이번에는 점수 차이가 오차를 넘는 번호가 없어, 오차 안의 번호 ${c.tie_pool}개 중에서 10개를 무작위로 골랐습니다. ` +
+      "다시 실행하면 후보가 바뀝니다.";
+  }
+
+  const prev = document.getElementById("candidate-previous");
+  prev.textContent =
+    c.previous_round === undefined
+      ? ""
+      : `직전 ${c.previous_round}회 당첨번호 6개 중 후보에 든 번호: ${c.previous_overlap.length}개` +
+        `${c.previous_overlap.length ? ` (${c.previous_overlap.map(pad).join(", ")})` : ""}. ` +
+        "무작위로 10개를 고를 때의 평균은 10 × 6 / 45 ≈ 1.33개입니다. 직전 번호가 들어 있는 것은 근거가 아니며, " +
+        "각 번호의 실제 당첨 확률은 직전 회차와 무관하게 6/45 ≈ 13.3%입니다. 점수 순위로만 자르던 이전 방식에서는 " +
+        "0에 가까운 가중치가 만든 아주 작은 점수 차이 때문에 직전 번호가 매번 4~6개 들어갔습니다.";
 
   const verdict = document.getElementById("candidate-verdict");
   const lr = bt && bt.ran ? bt.summaries.find((s) => s.key === "logistic") : null;
@@ -211,6 +240,9 @@ function renderData(s, v) {
   }
 }
 
+// 목적: 백테스트 카드(구간 정보, 모델별 요약, 일치 분포, 과적합 확인, 회차별 표)를 그린다.
+// 이유: 후보 옆 판정의 근거를 사용자가 직접 확인할 수 있어야 한다. z와 계산 방법은 감사 A-03에 따라 추가했다.
+// 방법: 서버의 summaries와 theory를 표로 옮기고, 정의 문장은 renderBacktestDefinition이 쓴다.
 function renderBacktest(bt) {
   document.getElementById("backtest-section").hidden = false;
   if (!bt.ran) {
@@ -228,12 +260,13 @@ function renderBacktest(bt) {
 
   table(
     "backtest-summary",
-    ["모델", "시험 회차", "평균 일치", "95% 범위", "판정"],
+    ["모델", "시험 회차", "평균 일치", "95% 범위", "z", "판정"],
     [
-      ...bt.summaries.map((s) => [s.label, s.rounds, s.mean, `${s.ci_low} ~ ${s.ci_high}`, s.verdict]),
-      ["무작위 이론값", bt.rounds, bt.theory.mean, "-", "10 × 6 / 45"],
+      ...bt.summaries.map((s) => [s.label, s.rounds, s.mean, `${s.ci_low} ~ ${s.ci_high}`, s.z, s.verdict]),
+      ["무작위 이론값", bt.rounds, bt.theory.mean, "-", "-", "10 × 6 / 45"],
     ]
   );
+  renderBacktestDefinition(bt);
   table(
     "backtest-dist",
     ["구분", "0개", "1개", "2개", "3개", "4개", "5개", "6개"],
@@ -275,6 +308,20 @@ function renderBacktest(bt) {
   table("backtest-rows", ["회차", "실제 당첨번호", "로지스틱 회귀 후보", "일치", "무작위 후보", "일치"], rows);
 }
 
+// 목적: 백테스트 표의 "95% 범위", "z", "판정"이 어떻게 계산되는지 표 아래에 적는다.
+// 이유: 화면에 정의가 없었다(감사 A-03, 핵심 규칙 7). 이론 표준편차를 쓴다는 점도 밝혀야 한다.
+// 방법: 서버가 준 theory.mean, theory.sd, theory.z95와 시험 회차 수를 backtest._summarize의 식에 넣어 문장으로 보여 준다.
+function renderBacktestDefinition(bt) {
+  const { mean, sd, z95 } = bt.theory;
+  document.getElementById("backtest-def").textContent =
+    `95% 범위 = 평균 ± ${z95} × ${sd} ÷ √n (n = 시험 회차 수 ${bt.rounds}). ` +
+    `여기서 ${sd}: 1~45에서 10개를 무작위로 고를 때 회차당 일치 개수의 이론 표준편차(관측한 표준편차가 아님). ` +
+    `z = (평균 − ${mean}) ÷ (${sd} ÷ √n). 판정: |z| < ${z95} → "무작위 기준선과 의미 있는 차이 없음", ` +
+    `z ≥ ${z95} → "무작위 이론값보다 높음", z ≤ −${z95} → "무작위 이론값보다 낮음". ` +
+    `무작위 이론값(${mean})이 95% 범위 안에 있으면 "의미 있는 차이 없음"과 같은 뜻입니다. ` +
+    "높음으로 나와도 미래 당첨을 보장하지 않습니다.";
+}
+
 function renderModel(c) {
   const section = document.getElementById("model-section");
   if (!c.weights || !c.weights.length) {
@@ -285,9 +332,18 @@ function renderModel(c) {
   table("model-weights", ["특징", "가중치"], c.weights.map((w) => [w.feature, w.weight]));
 }
 
+// 목적: 분석 항목별 결과를 화면 요소로 바꾼다.
+// 이유: 항목마다 결과 모양이 달라 각자 그리는 함수가 필요하다. 빈도 항목의 기대값은 전체 기간 값인데
+//       "회차당"으로 적었던 문구를 바로잡았다(감사 A-02).
+// 방법: 항목 KEY별로 서버 결과를 표와 문장으로 옮긴다. 수치는 서버가 계산한 값을 그대로 쓴다.
 const ANALYSIS_RENDERERS = {
   frequency: (r) => [
-    el("p", { class: "hint" }, `회차당 기대 출현 수: ${r.expected}회`),
+    el(
+      "p",
+      { class: "hint" },
+      `번호당 기대 출현 수(전체 ${r.rounds}회 합계): ${r.expected}회 = ${r.rounds} × 6 / 45. ` +
+        `한 회차에서 한 번호가 나올 기대값은 6 / 45 ≈ ${r.per_round}회입니다.`
+    ),
     newTable(["번호", "출현", "기대값과 차이", "보너스"], r.rows.map((x) => [x.number, x.count, x.diff, x.bonus_count])),
   ],
   odd_even: (r) => [newTable(["홀:짝", "회차 수", "비율(%)", "이론 비율(%)"], r.rows.map((x) => [`${x.odd}:${x.even}`, x.rounds, x.ratio, x.theory_ratio]))],

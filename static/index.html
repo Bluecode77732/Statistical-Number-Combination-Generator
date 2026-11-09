@@ -33,6 +33,8 @@
       <p class="candidate-line" id="candidate-line"></p>
       <div id="candidate-balls" class="balls"></div>
       <p id="candidate-method" class="hint"></p>
+      <p id="candidate-ties" class="hint"></p>
+      <p id="candidate-previous" class="hint"></p>
       <p id="candidate-verdict" class="verdict"></p>
     </section>
 
@@ -51,6 +53,7 @@
       <dl id="backtest-info" class="info"></dl>
       <h3>모델별 결과</h3>
       <div class="table-wrap"><table id="backtest-summary"></table></div>
+      <p id="backtest-def" class="hint"></p>
       <h3>일치 개수별 회차 수</h3>
       <div class="table-wrap"><table id="backtest-dist"></table></div>
       <p id="overfit-note" class="hint"></p>
@@ -65,7 +68,8 @@
       <p class="hint">
         각 번호가 다음 회차에 들어갈지를 아래 특징값으로 설명하는 모델입니다. 특징값은 모두 예측할 회차 이전 기록만으로
         계산합니다. 가중치는 표준화된 특징 기준이라 크기를 서로 비교할 수 있고, 0에 가까울수록 그 특징이 점수에 거의
-        영향을 주지 않는다는 뜻입니다. 점수 상위 10개가 후보가 되며, 이 점수는 실제 당첨 확률이 아닙니다
+        영향을 주지 않는다는 뜻입니다. 후보는 점수 차이가 오차(95% 기준)를 넘는 번호만 점수로 정하고, 나머지 자리는
+        오차 안의 번호 중에서 무작위로 채웁니다. 이 점수는 실제 당첨 확률이 아닙니다
         (각 번호의 실제 확률은 모델과 무관하게 6/45 ≈ 13.3%).
       </p>
       <div class="table-wrap"><table id="model-weights"></table></div>

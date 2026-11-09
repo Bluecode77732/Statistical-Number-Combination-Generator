@@ -18,7 +18,7 @@ from models import (
     ModelError,
     build_features,
     random_candidates,
-    top_candidates,
+    select_candidates,
     training_rows,
 )
 
@@ -59,6 +59,7 @@ def _summarize(key: str, matches: list[int]) -> dict:
 
 # 목적: START_ROUND부터 마지막 회차까지 워크포워드 백테스트를 수행한다.
 # 이유: 각 회차를 그 이전 데이터로만 예측해야 실제 사용 상황과 같은 조건의 성능을 잴 수 있다.
+#       후보 선택은 최종 후보와 같은 select_candidates(오차 안의 점수 차이는 동점)를 써야 화면의 판정이 그 방식의 성능이 된다.
 # 방법: 회차 t마다 1~t−1회로 로지스틱 회귀를 갱신(직전 가중치에서 이어서 학습)하고 후보 10개를 만든다.
 #       같은 회차에 무작위 기준선 후보도 만든다. 예측과 실제는 따로 모으고, 집계 때만 맞춰 본다.
 #       마지막에 전체 데이터로 학습한 모델을 같은 회차들에 다시 적용해(표본 내 성능) 과적합 여부를 본다.
@@ -94,7 +95,7 @@ def run_backtest(
             Xtr, ytr = training_rows(X, hits, t)
             model = LogisticModel().fit(Xtr, ytr, init=weights_init)
             weights_init = model.w
-            lr = top_candidates(model.scores(X[t]), rng_np)
+            lr = select_candidates(*model.logits_with_cov(X[t]), rng_np)["numbers"]
             predictions.append({"round": ordered[t].round_no, "model": "logistic",
                                 "model_label": MODEL_LABELS["logistic"], "candidates": lr})
             matches["logistic"].append(len(actual & set(lr)))
@@ -114,7 +115,8 @@ def run_backtest(
         Xall, yall = training_rows(X, hits, len(ordered))
         full = LogisticModel().fit(Xall, yall)
         rng_is = np.random.default_rng(seed + 1)
-        is_matches = [len(set(ordered[t].numbers) & set(top_candidates(full.scores(X[t]), rng_is))) for t in tests]
+        is_matches = [len(set(ordered[t].numbers) & set(select_candidates(*full.logits_with_cov(X[t]), rng_is)["numbers"]))
+                      for t in tests]
         in_sample = round(sum(is_matches) / len(is_matches), 4)
     except ModelError as exc:
         model_errors.append(f"전체 학습: {exc}")
@@ -126,7 +128,7 @@ def run_backtest(
         "data_range": [ordered[0].round_no, ordered[-1].round_no],
         "rounds": len(tests),
         "seconds": round(time.monotonic() - started, 1),
-        "theory": {"mean": round(THEORY_MEAN, 4), "sd": round(THEORY_SD, 4),
+        "theory": {"mean": round(THEORY_MEAN, 4), "sd": round(THEORY_SD, 4), "z95": Z95,
                    "expected_distribution": [round(p * len(tests), 1) for p in THEORY_PMF]},
         "summaries": summaries,
         "in_sample_mean": in_sample,
