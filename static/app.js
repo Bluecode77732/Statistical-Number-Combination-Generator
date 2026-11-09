@@ -161,6 +161,7 @@ async function loadResult() {
 // 이유: 점수 차이가 오차 안이면 동점으로 보고 무작위로 고르므로(2026-11-09 결정), 몇 개가 점수로 정해졌는지와
 //       직전 번호가 들어 있어도 근거가 아니라는 점을 후보 바로 옆에서 밝혀야 한다(핵심 규칙 7, 8).
 // 방법: 서버가 준 firm, tie_pool, tie_z, previous_overlap을 문장으로 옮긴다. 계산은 하지 않는다.
+//       판정 줄에는 평균과 함께 95% 범위를 붙인다(감사 A-15).
 function renderCandidates(c, bt) {
   document.getElementById("candidate-section").hidden = false;
   document.getElementById("target-round").textContent = `${c.target_round}회차용`;
@@ -201,8 +202,9 @@ function renderCandidates(c, bt) {
   const verdict = document.getElementById("candidate-verdict");
   const lr = bt && bt.ran ? bt.summaries.find((s) => s.key === "logistic") : null;
   verdict.textContent = lr
-    ? `백테스트(${bt.start_round}~${bt.end_round}회, ${bt.rounds}회): 이 모델의 평균 일치 ${lr.mean}개, ` +
-      `무작위 이론값 ${bt.theory.mean}개 — ${lr.verdict}.`
+    ? `백테스트(${bt.start_round}~${bt.end_round}회, ${bt.rounds}회): 이 모델의 평균 일치 ${lr.mean}개 ` +
+      `(95% 범위 ${lr.ci_low}~${lr.ci_high}), 무작위 이론값 ${bt.theory.mean}개 — ${lr.verdict}. ` +
+      "범위와 판정의 계산은 아래 백테스트 카드에 있습니다."
     : "백테스트 결과가 없어 모델 성능을 확인하지 못했습니다.";
 }
 
@@ -311,11 +313,13 @@ function renderBacktest(bt) {
 // 목적: 백테스트 표의 "95% 범위", "z", "판정"이 어떻게 계산되는지 표 아래에 적는다.
 // 이유: 화면에 정의가 없었다(감사 A-03, 핵심 규칙 7). 이론 표준편차를 쓴다는 점도 밝혀야 한다.
 // 방법: 서버가 준 theory.mean, theory.sd, theory.z95와 시험 회차 수를 backtest._summarize의 식에 넣어 문장으로 보여 준다.
+//       이론 표준편차의 식(THEORY_SD)도 함께 적는다.
 function renderBacktestDefinition(bt) {
   const { mean, sd, z95 } = bt.theory;
   document.getElementById("backtest-def").textContent =
     `95% 범위 = 평균 ± ${z95} × ${sd} ÷ √n (n = 시험 회차 수 ${bt.rounds}). ` +
-    `여기서 ${sd}: 1~45에서 10개를 무작위로 고를 때 회차당 일치 개수의 이론 표준편차(관측한 표준편차가 아님). ` +
+    `여기서 ${sd} = √(10 × 6/45 × 39/45 × 35/44): 1~45에서 10개를 무작위로 고를 때 회차당 일치 개수의 ` +
+    "이론 표준편차(관측한 표준편차가 아님). " +
     `z = (평균 − ${mean}) ÷ (${sd} ÷ √n). 판정: |z| < ${z95} → "무작위 기준선과 의미 있는 차이 없음", ` +
     `z ≥ ${z95} → "무작위 이론값보다 높음", z ≤ −${z95} → "무작위 이론값보다 낮음". ` +
     `무작위 이론값(${mean})이 95% 범위 안에 있으면 "의미 있는 차이 없음"과 같은 뜻입니다. ` +
