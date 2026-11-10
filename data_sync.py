@@ -55,7 +55,8 @@ def _describe(d: LottoDraw) -> str:
 #       최근 10회는 1회부터 빠짐없이 이어진 마지막 회차 기준이라, 엑셀에 공식에 없는 큰 회차가 있어도 공식 최신을 확인한다.
 #       3) 다른 회차는 공식 값으로 고치고 새 회차는 붙인다. 공식 최신보다 큰 회차는 공식에 없으므로 지우고 기록한다(W-11).
 #       확인용으로 요청한 회차가 하나도 오지 않으면(빈 응답) "이미 최신"이 아니라 업데이트 실패로 본다(감사 A-04).
-#       4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다.
+#       4) 바뀐 게 있을 때만 백업 → 임시 파일 저장 → 교체한다. 오래된 백업은 저장에 성공한 뒤에만 정리하고,
+#       저장이 실패하면 원본과 같은 방금 만든 백업을 거둬 이전 복원 지점을 지킨다(감사 A-11).
 #       엑셀이 아직 없으면 수집 전에 데이터 폴더에 쓸 수 있는지 확인해, 못 쓰면 수집하지 않고 바로 안내한다.
 #       시작할 때 이전 실행이 저장 중 종료되며 남긴 오래된 임시 파일도 함께 정리한다.
 def sync(
@@ -175,12 +176,17 @@ def sync(
         report.saved = True
         return report
 
+    backup = None
     try:
         if exists:
-            report.backup_path = str(excel_store.backup_store(path, clock()))
+            backup = excel_store.backup_store(path, clock())
+            report.backup_path = str(backup)
         excel_store.write_store(path, merged, log_rows + new_logs)
         report.saved = True
+        excel_store.prune_backups(path)
     except excel_store.StoreError as exc:
+        if backup is not None and excel_store.discard_backup_if_unchanged(path, backup):
+            report.backup_path = None
         report.messages.append(f"엑셀 업데이트 실패: {exc} 이번 분석은 받은 공식 데이터로 진행하지만 파일에는 반영되지 않았습니다.")
 
     report.status = "created" if not exists else "updated"

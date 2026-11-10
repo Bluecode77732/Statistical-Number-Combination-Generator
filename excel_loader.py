@@ -1,7 +1,7 @@
 """
 Excel 파일 읽기 및 데이터 검증 (Excel Loader & Validator)
 
-사용자가 지정한 로또 당첨 번호 Excel 파일을 pandas/openpyxl로 읽어
+프로그램이 관리하는 전용 엑셀(data 폴더의 lotto.xlsx)의 당첨번호 시트를 pandas로 읽어
 1회차부터 최신 회차까지의 데이터를 파싱하고 형식을 검증한다.
 
 이 모듈은 데이터를 읽고 검증하는 역할만 담당한다.
@@ -21,18 +21,11 @@ MIN_NUM = 1
 MAX_NUM = 45
 NUMBER_COUNT = 6
 
-# 컬럼 이름은 아래 별칭 중 하나와 일치하면 인식한다 (공백/대소문자 무시).
-ROUND_ALIASES = ["회차", "round", "draw", "draw_no", "회"]
-NUMBER_ALIASES = [
-    ["번호1", "num1", "1번", "번호 1", "n1"],
-    ["번호2", "num2", "2번", "번호 2", "n2"],
-    ["번호3", "num3", "3번", "번호 3", "n3"],
-    ["번호4", "num4", "4번", "번호 4", "n4"],
-    ["번호5", "num5", "5번", "번호 5", "n5"],
-    ["번호6", "num6", "6번", "번호 6", "n6"],
-]
-BONUS_ALIASES = ["보너스번호", "보너스", "bonus", "bonus_no", "bonus_number"]
-DATE_ALIASES = ["추첨일", "date", "draw_date"]
+# 전용 엑셀(excel_store.DRAW_HEADER)의 제목 행 이름. 앞뒤 공백만 무시하고 그대로 찾는다.
+ROUND_COL = "회차"
+NUMBER_COLS = [f"번호{i}" for i in range(1, NUMBER_COUNT + 1)]
+BONUS_COL = "보너스번호"
+DATE_COL = "추첨일"
 
 
 class ExcelValidationError(Exception):
@@ -51,58 +44,19 @@ class LottoDraw:
 class LoadResult:
     draws: list[LottoDraw]
     skipped_rows: list[dict] = field(default_factory=list)
-    columns_used: dict = field(default_factory=dict)
-    source_filename: str = ""
 
 
-def _normalize(col) -> str:
-    return str(col).strip().replace(" ", "").lower()
-
-
-def _find_column(columns, aliases) -> Optional[str]:
-    normalized = {_normalize(c): c for c in columns}
-    for alias in aliases:
-        key = _normalize(alias)
-        if key in normalized:
-            return normalized[key]
-    return None
-
-
-# 목적: 제목 행이 없는 파일(A열 회차, B~G열 번호, H열 보너스)을 표준 컬럼명을 가진 표로 바꾼다.
-# 이유: 실제 사용 파일은 헤더 없이 숫자만 들어 있어, 컬럼명으로 찾는 방식으로는 읽을 수 없었다.
-# 방법: 헤더 없이 다시 읽고 빈 행을 뺀 뒤, 첫 데이터 행의 앞 7칸이 회차+번호 모양일 때만 A~H열을 취한다.
-def _read_headerless(file_bytes: bytes) -> Optional[pd.DataFrame]:
-    raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
-    raw = raw.dropna(how="all")  # 인덱스는 그대로 두어 엑셀 행 번호(인덱스+1)를 유지한다
-    if raw.empty or raw.shape[1] < 1 + NUMBER_COUNT:
-        return None
-
-    first = [_safe_int(v) for v in raw.iloc[0, : 1 + NUMBER_COUNT]]
-    if first[0] is None or any(n is None or not MIN_NUM <= n <= MAX_NUM for n in first[1:]):
-        return None
-
-    names = [ROUND_ALIASES[0]] + [aliases[0] for aliases in NUMBER_ALIASES]
-    if raw.shape[1] > len(names):
-        names.append(BONUS_ALIASES[0])
-    # 뒤쪽 열(메모, 별도 집계표 등)은 읽지 않는다.
-    table = raw.iloc[:, : len(names)].copy()
-    table.columns = names
-    return table
-
-
-# 목적: 업로드된 Excel 바이트를 검증된 회차 목록으로 바꾼다.
-# 이유: 분석 전에 형식 오류를 걸러 내고, 제목 행이 있는 파일과 없는 파일을 모두 받기 위해서다.
-# 방법: 컬럼명으로 먼저 찾고, '회차'가 없으면 열 위치 기준으로 다시 읽은 뒤 행 단위로 검증한다.
+# 목적: 전용 엑셀의 당첨번호 시트를 검증된 회차 목록으로 바꾼다.
+# 이유: 분석과 수집 비교 전에 형식 오류를 걸러 낸다. 앱은 전용 엑셀만 읽으므로 제목 행 없는 파일과
+#       컬럼 별칭 읽기는 지웠다(결정 D-5, 감사 A-17).
+# 방법: 제목 행의 '회차', '번호1'~'번호6'을 이름으로 찾고 행 단위로 검증한다.
 #       회차가 1 미만이거나, 보너스가 범위 밖이거나 당첨번호와 겹치거나, 추첨일이 달력에 없는 날짜인 행도 건너뛴다.
 #       보너스·추첨일 칸이 비어 있는 것은 옛 형식으로 보고 허용한다.
-def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
+def load_excel(file_bytes: bytes) -> LoadResult:
     """
     Excel 바이트 데이터를 읽어 검증된 LottoDraw 목록을 반환한다.
     형식이 잘못된 파일이면 ExcelValidationError를 발생시킨다.
     """
-    if not filename.lower().endswith((".xlsx", ".xls")):
-        raise ExcelValidationError("Excel 파일(.xlsx 또는 .xls)만 업로드할 수 있습니다.")
-
     try:
         df = pd.read_excel(io.BytesIO(file_bytes))
     except Exception as exc:  # noqa: BLE001 - 사용자에게 원인을 그대로 알려주기 위함
@@ -111,31 +65,16 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
     if df.empty:
         raise ExcelValidationError("Excel 파일에 데이터가 없습니다.")
 
-    row_offset = 2  # 1행은 헤더이므로 인덱스 0이 엑셀 2행
-    round_col = _find_column(df.columns, ROUND_ALIASES)
-    if round_col is None:
-        headerless = _read_headerless(file_bytes)
-        if headerless is None:
-            raise ExcelValidationError(
-                "'회차' 컬럼을 찾을 수 없습니다. 제목 행에 '회차', '번호1'~'번호6'을 넣거나, "
-                "제목 행 없이 A열에 회차, B~G열에 당첨 번호 6개를 넣어 주세요."
-            )
-        df = headerless
-        row_offset = 1  # 헤더가 없으므로 인덱스 0이 엑셀 1행
-        round_col = _find_column(df.columns, ROUND_ALIASES)
+    df.columns = [str(c).strip() for c in df.columns]
+    missing = [c for c in [ROUND_COL, *NUMBER_COLS] if c not in df.columns]
+    if missing:
+        raise ExcelValidationError(f"제목 행에 {', '.join(missing)} 컬럼이 없습니다.")
 
-    number_cols: list[str] = []
-    for i, aliases in enumerate(NUMBER_ALIASES, start=1):
-        col = _find_column(df.columns, aliases)
-        if col is None:
-            raise ExcelValidationError(
-                f"'번호{i}' 컬럼을 찾을 수 없습니다. '번호1'~'번호6' 형식의 "
-                "당첨 번호 6개 컬럼이 모두 필요합니다."
-            )
-        number_cols.append(col)
-
-    bonus_col = _find_column(df.columns, BONUS_ALIASES)
-    date_col = _find_column(df.columns, DATE_ALIASES)
+    row_offset = 2  # 1행은 제목 행이므로 인덱스 0이 엑셀 2행
+    round_col = ROUND_COL
+    number_cols = NUMBER_COLS
+    bonus_col = BONUS_COL if BONUS_COL in df.columns else None
+    date_col = DATE_COL if DATE_COL in df.columns else None
 
     draws: list[LottoDraw] = []
     skipped_rows: list[dict] = []
@@ -200,12 +139,7 @@ def load_excel(file_bytes: bytes, filename: str) -> LoadResult:
 
     draws.sort(key=lambda d: d.round_no)  # 1회차 -> 최신 회차 순 정렬
 
-    return LoadResult(
-        draws=draws,
-        skipped_rows=skipped_rows,
-        columns_used={"round": round_col, "numbers": number_cols, "bonus": bonus_col},
-        source_filename=filename,
-    )
+    return LoadResult(draws=draws, skipped_rows=skipped_rows)
 
 
 # 목적: 회차 목록 전체에서 행 단위 검사로는 못 잡는 문제(회차 중복, 빠진 회차)를 찾는다.

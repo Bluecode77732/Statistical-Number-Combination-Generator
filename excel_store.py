@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import os
 import shutil
 import sys
@@ -81,7 +82,7 @@ def read_store(path: Path) -> StoredData:
         ) from exc
 
     try:
-        loaded = load_excel(data, path.name)
+        loaded = load_excel(data)
     except ExcelValidationError as exc:
         raise StoreError(
             f"전용 엑셀이 손상되었거나 형식이 다릅니다({exc}). "
@@ -101,9 +102,10 @@ def read_store(path: Path) -> StoredData:
     return StoredData(draws=loaded.draws, skipped_rows=loaded.skipped_rows, log_rows=log_rows)
 
 
-# 목적: 바꾸기 직전의 엑셀을 백업 폴더에 복사하고, 오래된 백업을 정리한다.
-# 이유: 업데이트가 잘못돼도 직전 상태로 되돌릴 수 있어야 하고, 실행마다 백업이 쌓이면 안 된다.
-# 방법: data\backup\lotto_YYYYMMDD_HHMMSS.xlsx로 복사한 뒤, 이름순(=시간순)으로 최근 BACKUP_KEEP개만 남긴다.
+# 목적: 바꾸기 직전의 엑셀을 백업 폴더에 복사한다.
+# 이유: 업데이트가 잘못돼도 직전 상태로 되돌릴 수 있어야 한다. 오래된 백업 정리는 저장에 성공한 뒤
+#       prune_backups가 따로 한다(감사 A-11: 저장이 계속 실패하면 같은 내용의 백업이 이전 복원 지점을 밀어냈다).
+# 방법: data\backup\lotto_YYYYMMDD_HHMMSS.xlsx로 복사한다. 이름이 겹치면 _1, _2를 붙인다.
 #       백업 폴더를 만들지 못하는 경우도 처리되지 않은 오류가 아니라 StoreError로 알린다.
 def backup_store(path: Path, now: Optional[datetime] = None) -> Path:
     backup_dir = path.parent / "backup"
@@ -121,14 +123,37 @@ def backup_store(path: Path, now: Optional[datetime] = None) -> Path:
         shutil.copy2(path, target)
     except OSError as exc:
         raise StoreError(f"백업을 만들지 못해 업데이트를 중단했습니다: {exc}") from exc
+    return target
 
-    backups = sorted(backup_dir.glob(f"{path.stem}_*{path.suffix}"))
+
+# 목적: 백업 폴더에 최근 BACKUP_KEEP개만 남긴다.
+# 이유: 실행마다 백업이 쌓이면 안 되지만, 저장이 실패한 실행에서 지우면 이전 복원 지점을 잃는다(감사 A-11).
+# 방법: 저장에 성공한 뒤에만 부른다. 이름순(=시간순)으로 정렬해 오래된 것부터 지우고, 못 지우면 다음 실행에 맡긴다.
+def prune_backups(path: Path) -> None:
+    backup_dir = path.parent / "backup"
+    try:
+        backups = sorted(backup_dir.glob(f"{path.stem}_*{path.suffix}"))
+    except OSError:
+        return
     for old in backups[:-BACKUP_KEEP]:
         try:
             old.unlink()
         except OSError:
             pass  # 지우지 못한 오래된 백업은 다음 실행 때 다시 시도한다
-    return target
+
+
+# 목적: 저장이 실패한 실행에서 방금 만든 백업을 거둔다.
+# 이유: 저장이 실패하면 원본이 그대로라 그 백업은 원본과 같은 사본이다. 실패가 반복될 때 같은 사본이
+#       쌓여 다음 성공 때 이전 복원 지점이 밀려나지 않게 한다(감사 A-11).
+# 방법: 백업과 원본을 바이트 단위로 비교해 같을 때만 지운다. 다르거나 비교할 수 없으면 백업을 남긴다.
+def discard_backup_if_unchanged(path: Path, backup: Path) -> bool:
+    try:
+        if not filecmp.cmp(path, backup, shallow=False):
+            return False
+        backup.unlink()
+    except OSError:
+        return False
+    return True
 
 
 # 목적: 워크북을 원본을 해치지 않는 방식으로 저장한다.

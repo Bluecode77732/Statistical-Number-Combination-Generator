@@ -25,4 +25,10 @@ $zip = "dist\LottoAnalyzer.zip"
 if (Test-Path $zip) { Remove-Item $zip -ErrorAction Stop }
 & $python -c "import shutil; shutil.make_archive('dist/LottoAnalyzer', 'zip', 'dist', 'LottoAnalyzer')"
 if ($LASTEXITCODE -ne 0) { throw "zip 생성 실패" }
+
+# 받는 사람이 전달받은 zip이 만든 것과 같은지 대조할 수 있게 SHA-256 값을 화면과 파일에 남긴다(감사 A-09, W-5).
+# 값은 zip과 따로(메시지 등으로) 전달해야 의미가 있다. 확인 방법은 사용법.txt에 적었다.
+$hash = (Get-FileHash $zip -Algorithm SHA256 -ErrorAction Stop).Hash
+Set-Content "$zip.sha256.txt" "$hash  LottoAnalyzer.zip" -Encoding ascii -ErrorAction Stop
 Write-Output "완료: $zip"
+Write-Output "SHA-256: $hash"

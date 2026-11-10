@@ -25,4 +25,3 @@ data/
 # User-provided data files (kept local, not versioned)
 *.xlsx
 *.xls
-!sample_data/*.xlsx

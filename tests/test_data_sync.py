@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import data_sync
 import excel_store
@@ -101,6 +102,34 @@ class SyncTest(unittest.TestCase):
         self.assertIn(6, report.added)
         self.assertEqual([d.round_no for d in excel_store.read_store(self.path).draws], list(range(1, 41)))
         self.assertEqual(report.issues, {"duplicates": [], "missing": []})
+
+    # 목적: 저장이 계속 실패해도 이전 복원 지점이 지워지지 않는지 재현한다(감사 E8, A-11).
+    # 이유: 예전에는 실패한 실행마다 원본과 같은 백업이 생기고 오래된 백업이 정리되어, 12번 실패하면 서로 다른
+    #       복원 지점이 1개만 남았다.
+    # 방법: 내용이 서로 다른 오래된 백업 10개를 둔 채 교체 단계를 12번 실패시키고, 백업 목록과 원본이 그대로인지 본다.
+    #       이어서 저장에 성공하면 새 백업이 생기고 가장 오래된 것 하나만 정리되는지 본다.
+    def test_repeated_save_failure_keeps_old_restore_points(self):
+        data_sync.sync(self.path, http_get=FakeServer(self.draws[:30]), now=self.clock, sleep=no_sleep)
+        backup_dir = self.path.parent / "backup"
+        backup_dir.mkdir()
+        for i in range(excel_store.BACKUP_KEEP):
+            excel_store.write_store(backup_dir / f"lotto_20260901_0000{i:02d}.xlsx", make_draws(20 + i), [])
+        old_backups = self.backups()
+        original = self.path.read_bytes()
+        with mock.patch("excel_store.os.replace", side_effect=OSError("disk full")):
+            for _ in range(12):
+                report = self.sync()
+                self.assertFalse(report.saved)
+                self.assertIsNone(report.backup_path)
+        self.assertEqual(self.backups(), old_backups)
+        self.assertEqual(self.path.read_bytes(), original)
+
+        report = self.sync()
+        self.assertTrue(report.saved)
+        after = self.backups()
+        self.assertEqual(len(after), excel_store.BACKUP_KEEP)
+        self.assertEqual(after[:-1], old_backups[1:])
+        self.assertEqual(str(after[-1]), report.backup_path)
 
     def test_network_failure_keeps_existing_file(self):
         self.sync()

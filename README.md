@@ -61,6 +61,8 @@ python -m unittest discover -s tests -t .
 ```
 
 - 결과물: `dist\LottoAnalyzer.zip` (압축을 푼 형태는 `dist\LottoAnalyzer\`)
+- 빌드가 끝나면 zip의 SHA-256 값을 화면에 보여 주고 `dist\LottoAnalyzer.zip.sha256.txt`에도 남깁니다.
+  zip과 따로(메시지 등으로) 이 값을 알려 주면, 받는 사람이 `사용법.txt`의 방법으로 같은 파일인지 대조할 수 있습니다.
 - 받는 사람은 압축을 풀고 `LottoAnalyzer.exe`를 더블클릭합니다. Python 설치는 필요 없습니다.
   자세한 안내는 묶음 안의 `사용법.txt`에 있습니다.
 - **인터넷 연결이 필요합니다.** 첫 실행 때 공식 데이터를 받아 exe 옆 `data\` 폴더에 엑셀을 만듭니다.
@@ -114,6 +116,7 @@ Lottery/
 
 - 내용이 실제로 바뀔 때만, 바꾸기 직전 파일을 `data\backup\lotto_YYYYMMDD_HHMMSS.xlsx`로 복사합니다.
 - 새 회차가 없는 실행에서는 백업을 만들지 않습니다. 최근 10개만 남깁니다.
+- 오래된 백업은 저장에 성공한 뒤에만 정리합니다. 저장이 실패하면 방금 만든 백업(원본과 같은 내용)을 거둬, 실패가 반복되어도 예전 복원 지점이 지워지지 않습니다.
 - 저장은 임시 파일에 먼저 쓴 뒤 교체하므로, 저장 도중 실패해도 원본이 깨지지 않습니다.
 
 ### `data\backtest.xlsx` (백테스트 결과)

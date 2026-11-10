@@ -43,14 +43,33 @@ class StoreTest(unittest.TestCase):
                 excel_store.write_store(self.path, make_draws(6), [])
         self.assertIn("열려 있어", str(ctx.exception))
 
+    # 목적: 백업을 만들기만 하고, 정리는 prune_backups를 부를 때 최근 BACKUP_KEEP개로 줄이는지 확인한다.
+    # 이유: 정리를 저장 성공 뒤로 옮겼다(감사 A-11). 백업 자체가 오래된 복원 지점을 지우면 안 된다.
+    # 방법: 한도보다 3개 많이 백업한 뒤 개수를 보고, 정리 후 남은 것이 가장 최근 것들인지 본다.
     def test_backup_created_and_pruned_to_limit(self):
         excel_store.write_store(self.path, make_draws(5), [])
         base = datetime(2026, 1, 1, 0, 0, 0)
         for i in range(excel_store.BACKUP_KEEP + 3):
             excel_store.backup_store(self.path, base + timedelta(seconds=i))
+        self.assertEqual(len(list((self.dir / "backup").iterdir())), excel_store.BACKUP_KEEP + 3)
+        excel_store.prune_backups(self.path)
         backups = sorted((self.dir / "backup").iterdir())
         self.assertEqual(len(backups), excel_store.BACKUP_KEEP)
         self.assertTrue(backups[-1].name.endswith("_000012.xlsx"))  # 가장 최근 것이 남음
+        self.assertTrue(backups[0].name.endswith("_000003.xlsx"))
+
+    # 목적: 원본과 같은 백업만 거두고, 원본과 다른 백업은 남기는지 확인한다.
+    # 이유: 저장 실패 뒤 거두는 백업이 실제 복원 지점이면 안 된다(규칙 4).
+    # 방법: 백업 직후(같음)와 원본을 바꾼 뒤(다름) 각각 discard_backup_if_unchanged를 부른다.
+    def test_discard_backup_only_when_identical(self):
+        excel_store.write_store(self.path, make_draws(5), [])
+        same = excel_store.backup_store(self.path, datetime(2026, 1, 1, 0, 0, 0))
+        self.assertTrue(excel_store.discard_backup_if_unchanged(self.path, same))
+        self.assertFalse(same.exists())
+        kept = excel_store.backup_store(self.path, datetime(2026, 1, 1, 0, 0, 1))
+        excel_store.write_store(self.path, make_draws(6), [])
+        self.assertFalse(excel_store.discard_backup_if_unchanged(self.path, kept))
+        self.assertTrue(kept.exists())
 
     def test_corrupt_file_raises_store_error(self):
         self.path.write_bytes(b"not an excel file")
