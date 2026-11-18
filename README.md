@@ -7,7 +7,6 @@
 - 후보 10개는 로또 한 게임(6개)이 아니라 **후보 숫자 목록**입니다. 당첨을 보장하지 않습니다.
 - Python + FastAPI 백엔드, 순수 HTML/CSS/JavaScript 화면. 데이터베이스와 클라우드 호스팅은 쓰지 않습니다.
 - 외부로 나가는 통신은 공식 당첨결과 조회뿐입니다. 데이터는 이 PC의 엑셀 파일에만 저장됩니다.
-- 설계와 결정의 근거: [docs/DESIGN.md](docs/DESIGN.md)
 
 ## 실행하면 일어나는 일
 
@@ -91,7 +90,6 @@ Lottery/
 ├── launcher.py         # 실행 파일 진입점
 ├── static/             # 화면 (index.html, style.css, app.js)
 ├── tests/              # 자동 테스트 (unittest)
-├── docs/               # 설계, 구조, 수치 정의, 로드맵, 감사 기록
 └── data/               # 실행 중 생성 (git에서 제외)
     ├── lotto.xlsx
     ├── backtest.xlsx
