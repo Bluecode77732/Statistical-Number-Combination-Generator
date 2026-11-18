@@ -25,3 +25,8 @@ data/
 # User-provided data files (kept local, not versioned)
 *.xlsx
 *.xls
+
+# 문서: PC에만 두고 GitHub에는 올리지 않는다. 맨 위 README.md 하나만 예외
+docs/
+*.md
+!/README.md
