@@ -3,8 +3,13 @@
 # 근거: 핵심 규칙 2(외부 통신은 공식 조회뿐). /docs, /redoc이 CDN을 불렀다(감사 A-08).
 
 import unittest
+from unittest import mock
+
+from fastapi import HTTPException
 
 import main
+import pipeline
+from tests.helpers import make_draws
 
 
 class RoutesTest(unittest.TestCase):
@@ -26,6 +31,30 @@ class RoutesTest(unittest.TestCase):
         paths = {getattr(r, "path", "") for r in main.app.routes}
         for p in ("/", "/api/run", "/api/status", "/api/result", "/api/redraw", "/static"):
             self.assertIn(p, paths)
+
+
+class RedrawRouteTest(unittest.TestCase):
+    # 목적: POST /api/redraw가 실행 전에는 409와 안내를, 실행 뒤에는 재산출 규칙의 후보와 상태를 돌려주는지 확인한다.
+    # 이유: 재산출 버튼이 쓰는 API의 응답 모양이다. 2026-11-20부터 재산출은 재산출 규칙(묶음 포함)으로 고른다.
+    # 방법: httpx가 없어 라우트 함수를 직접 부른다. main.pipeline을 실행 전 Pipeline과, 마지막 실행 데이터만 채운
+    #       Pipeline으로 바꿔 끼운다.
+    def test_redraw_route(self):
+        fresh = pipeline.Pipeline()
+        with mock.patch.object(main, "pipeline", fresh):
+            with self.assertRaises(HTTPException) as ctx:
+                main.redraw()
+        self.assertEqual(ctx.exception.status_code, 409)
+
+        ran = pipeline.Pipeline()
+        ran.state = "done"
+        ran._draws = make_draws(200)
+        ran.result = {"candidates": {"redraw_count": 0}}
+        with mock.patch.object(main, "pipeline", ran):
+            body = main.redraw()
+        self.assertEqual(set(body), {"status", "candidates"})
+        c = body["candidates"]
+        self.assertEqual((c["method"], c["redraw_count"], len(set(c["numbers"]))), ("mixed", 1, 10))
+        self.assertEqual([g["key"] for g in c["groups"]], ["model", "recent", "hot", "cold"])
 
 
 if __name__ == "__main__":

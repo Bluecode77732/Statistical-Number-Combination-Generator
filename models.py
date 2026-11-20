@@ -13,7 +13,20 @@ from excel_loader import LottoDraw
 
 NUMBERS = 45
 PICK = 10
-TIE_Z = 1.96  # 두 번호의 점수 차이가 표준오차의 이 배수 이하면 동점으로 본다 (95% 기준, 백테스트 판정과 같은 값)
+# 번호 재산출 규칙(2026-11-20 사용자 결정): 점수 상위 5 + 최근 5회 당첨번호 2 + 최근 50회 최다 출현 1 + 최소 출현 2
+MIX_TOP = 5
+RECENT_ROUNDS = 5
+RECENT_PICK = 2
+FREQ_ROUNDS = 50
+HOT_PICK = 1
+COLD_PICK = 2
+MIX_LABELS = {
+    "model": "모델 점수 상위",
+    "recent": f"최근 {RECENT_ROUNDS}회 당첨번호",
+    "hot": f"최근 {FREQ_ROUNDS}회 최다 출현 쪽",
+    "cold": f"최근 {FREQ_ROUNDS}회 최소 출현 쪽",
+    "fill": "보충(앞 묶음이 모자란 자리)",
+}
 WINDOWS = (5, 10, 30, 100)
 FEATURE_NAMES = [
     "직전 5회 출현 비율",
@@ -67,31 +80,74 @@ def build_features(draws: list[LottoDraw]) -> tuple[np.ndarray, np.ndarray]:
     return X, hits
 
 
-# 목적: 번호 45개의 점수(로짓)와 그 공분산으로 후보 10개를 고르고, 몇 개가 점수로 정해졌는지 함께 돌려준다.
-# 이유: 가중치가 0에 가까워 번호 간 점수 차이가 오차보다 훨씬 작은데도 순위로만 자르면, 그 작은 차이 때문에
-#       직전 회차 번호가 매번 4~6개 들어갔다(2026-11-09 측정). 오차 안의 차이는 순위의 근거로 쓰지 않는다.
-# 방법: 점수 순위(같은 점수는 무작위로 가름)를 매긴 뒤, 상위 10개 중 11위보다 z × SE(차이) 넘게 높은 번호는 "확정",
-#       11위 아래 중 10위보다 z × SE 넘게 낮은 번호는 "제외"로 둔다. 남은 자리는 나머지(동점 묶음)에서 균등 무작위로
-#       채운다. 차이의 분산은 cov[i,i] + cov[j,j] − 2·cov[i,j]. z = 0이면 점수 상위 10개와 같다.
-def select_candidates(logits: np.ndarray, cov: np.ndarray, rng: np.random.Generator,
-                      z: float = TIE_Z, k: int = PICK) -> dict:
-    order = np.lexsort((rng.random(NUMBERS), -logits))
-    i_last, i_next = order[k - 1], order[k]
-    var = np.diag(cov)
+# 목적: 고를 수 있는 번호(0부터 센 위치)를 값 순서로 줄 세운다. 값이 같으면 무작위 순서로 둔다.
+# 이유: 점수 상위, 최다 출현, 최소 출현을 모두 같은 규칙으로 고르기 위해서다. 값이 같을 때 번호가 작은 쪽이
+#       항상 앞서면 그 자체가 근거 없는 편향이 된다.
+# 방법: 값(내림차순이면 부호를 뒤집음)을 우선, 무작위 값을 다음 기준으로 lexsort한다. 난수는 대상 수만큼 쓴다.
+def _ranked(values: np.ndarray, eligible, rng: np.random.Generator, descending: bool) -> list[int]:
+    idx = np.array(sorted(eligible), dtype=int)
+    key = -values[idx] if descending else values[idx]
+    return [int(i) for i in idx[np.lexsort((rng.random(len(idx)), key))]]
 
-    # 목적: 번호 i의 점수가 번호 j보다 오차를 넘게 높은지 판단한다.
-    # 이유: 확정·제외를 가르는 단 하나의 기준이라 한곳에 둔다.
-    # 방법: 로짓 차이를 그 차이의 표준편차 × z와 비교한다. 같으면 높지 않은 것으로 본다.
-    def clearly_above(i: int, j: int) -> bool:
-        sd = np.sqrt(max(var[i] + var[j] - 2 * cov[i, j], 0.0))
-        return logits[i] - logits[j] > z * sd
 
-    firm = [int(i) for i in order[:k] if clearly_above(i, i_next)]
-    out = {int(i) for i in order[k:] if clearly_above(i_last, i)}
-    pool = [i for i in range(NUMBERS) if i not in firm and i not in out]
-    fill = [int(i) for i in rng.choice(pool, k - len(firm), replace=False)]
-    return {"numbers": sorted(i + 1 for i in firm + fill),
-            "firm": sorted(i + 1 for i in firm), "tie_pool": len(pool)}
+# 목적: 점수 배열에서 상위 10개 번호를 골라 오름차순으로 돌려준다.
+# 이유: 첫 화면 후보는 로지스틱 회귀 점수 상위 10개로 낸다(2026-11-20 사용자 결정, 2026-11-09 동점 처리 이전 방식 복원).
+#       점수가 정확히 같은 번호는 실제 데이터에서 나오지 않지만, 나오면 번호순이 아니라 무작위로 가른다.
+# 방법: 점수 내림차순으로 줄 세운 뒤(_ranked) 앞 10개를 정렬한다.
+def top_candidates(scores: np.ndarray, rng: np.random.Generator, k: int = PICK) -> list[int]:
+    return sorted(i + 1 for i in _ranked(scores, range(NUMBERS), rng, descending=True)[:k])
+
+
+# 목적: 번호 재산출 규칙으로 후보 10개를 고르고, 묶음별로 무엇을 골랐는지 함께 돌려준다.
+# 이유: 사용자가 정한 재산출 규칙(2026-11-20)이다. 첫 화면(점수 상위 10개)과 다른 한 세트를 보여 주되,
+#       각 자리가 어떤 기준으로 들어왔는지 화면에 밝혀야 한다(핵심 규칙 7). 빈도는 이 10개 중 3자리에만 쓴다(규칙 6).
+# 방법: hits_before는 예측할 회차 이전 회차들의 (회차, 45) 출현 행렬이라, 그 밖의 데이터는 쓰지 않는다(규칙 9).
+#       고르는 순서는 a → b → c이고 앞에서 고른 번호는 뒤에서 빼서 겹치지 않는다.
+#       a. 모델 점수 상위 5개(top_candidates와 같은 점수·같은 줄 세우기).
+#       b. 최근 5회 당첨번호(보너스 제외)에 나온 번호 중 a에 없는 것에서 무작위 2개.
+#       c. 최근 50회 출현 횟수로 남은 번호를 줄 세워, 많은 쪽 앞에서 1개, 그다음 적은 쪽 앞에서 2개.
+#          "쪽"은 출현 횟수가 가장 많은(적은) 번호들이다. 같은 횟수끼리는 무작위 순서라, 그 횟수의 번호가 고를 수보다
+#          많으면 그중 무작위로, 모자라면 모두 넣고 다음 횟수의 번호에서 무작위로 채운다.
+#       b의 대상이 2개보다 적으면(실제 데이터에서는 일어나지 않음) 모자란 자리는 마지막에 남은 번호에서 무작위로 채운다.
+def mixed_candidates(scores: np.ndarray, hits_before: np.ndarray, rng: np.random.Generator) -> dict:
+    if len(hits_before) < FREQ_ROUNDS:
+        raise ModelError(f"최근 {FREQ_ROUNDS}회 데이터가 없어 재산출 규칙을 쓸 수 없습니다.")
+    chosen: list[int] = []
+    groups: list[dict] = []
+
+    # 목적: 한 묶음의 번호를 결과에 더한다.
+    # 이유: 다섯 묶음이 같은 모양으로 담겨야 화면이 한 방식으로 그릴 수 있다.
+    # 방법: 번호(0부터)를 1부터로 바꿔 오름차순으로 담고, 고른 목록에도 더한다.
+    def add(key: str, picked: list[int], **extra) -> None:
+        chosen.extend(picked)
+        groups.append({"key": key, "label": MIX_LABELS[key], "numbers": sorted(i + 1 for i in picked), **extra})
+
+    add("model", _ranked(scores, range(NUMBERS), rng, descending=True)[:MIX_TOP])
+
+    recent = np.flatnonzero(hits_before[-RECENT_ROUNDS:].sum(axis=0) > 0)
+    pool = [int(i) for i in recent if i not in chosen]
+    take = min(RECENT_PICK, len(pool))
+    add("recent", [int(i) for i in rng.choice(pool, take, replace=False)] if take else [], pool=len(pool))
+
+    counts = hits_before[-FREQ_ROUNDS:].sum(axis=0)
+
+    # 목적: 최근 50회 출현 횟수로 많은(적은) 쪽에서 k개를 고르고, 번호마다 횟수와 같은 횟수의 번호 수를 남긴다.
+    # 이유: 화면이 "몇 번 나왔고, 같은 횟수 몇 개 중에서 무작위로 골랐는지"를 밝히게 하기 위해서다.
+    # 방법: 아직 고르지 않은 번호를 _ranked로 줄 세워 앞 k개를 고른다. tied는 고르기 직전 남은 번호 중 같은 횟수의 수다.
+    def by_count(key: str, k: int, descending: bool) -> None:
+        eligible = [i for i in range(NUMBERS) if i not in chosen]
+        picked = _ranked(counts, eligible, rng, descending)[:k]
+        picks = [{"number": i + 1, "count": int(counts[i]),
+                  "tied": sum(1 for j in eligible if counts[j] == counts[i])} for i in sorted(picked)]
+        add(key, picked, picks=picks)
+
+    by_count("hot", HOT_PICK, descending=True)
+    by_count("cold", COLD_PICK, descending=False)
+
+    if len(chosen) < PICK:
+        rest = [i for i in range(NUMBERS) if i not in chosen]
+        add("fill", [int(i) for i in rng.choice(rest, PICK - len(chosen), replace=False)])
+    return {"numbers": sorted(i + 1 for i in chosen), "groups": groups}
 
 
 # 목적: 무작위 기준선 후보 10개를 만든다.
@@ -111,15 +167,13 @@ class LogisticModel:
         self.mu = None
         self.sd = None
         self.w = None
-        self.cov = None
 
-    # 목적: 특징값과 정답으로 로지스틱 회귀를 학습하고, 가중치의 공분산도 구해 둔다.
+    # 목적: 특징값과 정답으로 로지스틱 회귀를 학습한다.
     # 이유: 각 번호가 다음 회차에 들어갈지를 특징값으로 설명하는 가장 단순하고 해석 가능한 모델이다.
-    #       공분산은 번호 간 점수 차이가 오차보다 큰지 판단하는 데 쓴다(select_candidates).
+    #       2026-11-20에 점수 상위 10개 선택으로 돌아가 동점 판단용 공분산 계산을 뺐다.
     # 방법: 학습 데이터의 평균·표준편차로만 표준화하고, L2 정규화를 건 뉴턴법으로 푼다.
     #       init(직전 가중치)을 주면 거기서 시작해 백테스트의 반복 학습을 빠르게 한다.
     #       뉴턴 단계의 방정식을 풀지 못하면 ModelError로 바꿔 무작위 대체로 이어지게 한다(감사 A-01).
-    #       공분산은 최종 가중치에서 다시 계산한 헤시안(정규화 포함)의 역행렬이다. 부트스트랩과 비교해 거의 같았다.
     def fit(self, X: np.ndarray, y: np.ndarray, init: np.ndarray | None = None) -> "LogisticModel":
         if len(X) == 0 or y.min() == y.max():
             raise ModelError("학습할 데이터가 부족합니다.")
@@ -143,33 +197,12 @@ class LogisticModel:
                 break
         if not np.all(np.isfinite(w)):
             raise ModelError("학습 결과가 수치적으로 발산했습니다.")
-        p = 1.0 / (1.0 + np.exp(-np.clip(A @ w, -30, 30)))
-        hess = (A * (p * (1 - p))[:, None]).T @ A + np.diag(reg)
-        try:
-            cov = np.linalg.inv(hess)
-        except np.linalg.LinAlgError as exc:
-            raise ModelError("가중치의 오차를 계산하지 못했습니다.") from exc
-        if not np.all(np.isfinite(cov)):
-            raise ModelError("가중치의 오차 계산 결과가 올바르지 않습니다.")
         self.w = w
-        self.cov = cov
         return self
 
-    # 목적: 번호들의 점수(로짓)와 그 공분산 행렬을 돌려준다.
-    # 이유: 후보 선택이 점수 순위뿐 아니라 점수 차이의 오차까지 보게 하기 위해서다.
-    # 방법: 학습 때의 표준화를 적용한 설계행렬 A로 로짓 A·w, 공분산 A·cov·Aᵀ를 계산한다.
-    def logits_with_cov(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if self.w is None:
-            raise ModelError("학습되지 않은 모델입니다.")
-        A = np.hstack([np.ones((len(X), 1)), (X - self.mu) / self.sd])
-        logits = A @ self.w
-        cov = A @ self.cov @ A.T
-        if not (np.all(np.isfinite(logits)) and np.all(np.isfinite(cov))):
-            raise ModelError("점수 계산 결과가 올바르지 않습니다.")
-        return logits, cov
-
     # 목적: 번호 45개의 모델 점수(0~1)를 계산한다.
-    # 이유: API에 내보내는 점수다. 실제 당첨 확률이 아니며, 각 번호의 실제 확률은 모델과 무관하게 6/45다.
+    # 이유: 첫 화면 상위 10개와 재산출 규칙 a(상위 5개)의 기준이며 API에도 내보낸다. 실제 당첨 확률이 아니며,
+    #       각 번호의 실제 확률은 모델과 무관하게 6/45다.
     # 방법: 학습 때의 표준화를 그대로 적용한 뒤 시그모이드를 씌운다.
     def scores(self, X: np.ndarray) -> np.ndarray:
         if self.w is None:

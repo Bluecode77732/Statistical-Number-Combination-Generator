@@ -191,10 +191,11 @@ class Pipeline:
         self.state = "done"
         self.current_message = "완료"
 
-    # 목적: 마지막 실행의 데이터로 후보 10개만 새로 고른다.
-    # 이유: 후보는 동점 묶음에서 무작위로 채워지므로, 수집·분석·백테스트(약 12초)를 다시 하지 않고도 새 한 세트를
-    #       볼 수 있게 한다(사용자 요청, 2026-11-09). 고르는 코드는 첫 산출·백테스트와 같은 next_candidates다.
-    # 방법: 잠금 안에서 실행 중이거나 후보를 만든 실행이 없으면 RedrawUnavailable을 낸다. 아니면 next_candidates를 다시
+    # 목적: 마지막 실행의 데이터로 후보 10개만 재산출 규칙으로 새로 고른다.
+    # 이유: 수집·분석·백테스트(약 12초)를 다시 하지 않고 새 한 세트를 보게 한다(사용자 요청, 2026-11-09).
+    #       2026-11-20 사용자 결정으로 재산출은 첫 산출(점수 상위 10개)과 다른 규칙(점수 5 · 최근 5회 2 · 빈도 3)을 쓴다.
+    #       고르는 코드는 백테스트가 재산출 규칙을 잴 때와 같은 mixed_candidates다.
+    # 방법: 잠금 안에서 실행 중이거나 후보를 만든 실행이 없으면 RedrawUnavailable을 낸다. 아니면 redraw_candidates를
     #       불러 결과의 후보만 바꾸고 재산출 횟수를 1 늘린다. 다른 결과(분석, 백테스트)와 진행 상태 문구는 그대로 둔다.
     def redraw(self) -> dict:
         with self._lock:
@@ -203,7 +204,7 @@ class Pipeline:
             if self._draws is None or not self.result or "candidates" not in self.result:
                 raise RedrawUnavailable("아직 후보를 만든 실행이 없습니다. '다시 실행'으로 분석을 먼저 끝내 주세요.")
             count = self.result["candidates"].get("redraw_count", 0) + 1
-            cand = candidates.next_candidates(self._draws)
+            cand = candidates.redraw_candidates(self._draws)
             cand["redraw_count"] = count
             self.result["candidates"] = cand
             self.steps["candidates"]["state"] = "warning" if cand["method"] == "random" else "done"

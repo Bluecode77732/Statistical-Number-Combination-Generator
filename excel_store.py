@@ -233,7 +233,9 @@ def write_store(path: Path, draws: list[LottoDraw], log_rows: list[list]) -> Non
 
 # 목적: 백테스트의 예측과 실제 결과를 별도 엑셀로 남긴다.
 # 이유: 예측과 실제를 섞지 않고 따로 보관하라는 요구가 있고, 화면을 닫은 뒤에도 확인할 수 있어야 한다.
+#       2026-11-20부터 두 선택 방식(첫 화면, 재산출 규칙)을 함께 재므로 요약에 z와 직전 회차 포함 평균을 더했다.
 # 방법: 예측·실제·요약 시트를 나눠 실행마다 새로 쓴다. 당첨번호 엑셀과는 다른 파일이라 백업 대상이 아니다.
+#       예측 시트는 방식마다 한 행씩, "모델" 열에 방식 이름을 쓴다.
 def write_backtest(path: Path, result: dict) -> None:
     wb = Workbook()
     pred = wb.active
@@ -247,9 +249,11 @@ def write_backtest(path: Path, result: dict) -> None:
         actual.append([a["round"], *a["numbers"], a["bonus"]])
 
     summary = wb.create_sheet("요약")
-    summary.append(["모델", "시험 회차 수", "평균 일치 개수", "95% 범위 하한", "95% 범위 상한", "판정"])
+    summary.append(["모델", "시험 회차 수", "평균 일치 개수", "95% 범위 하한", "95% 범위 상한", "z", "판정",
+                    "직전 회차 번호 포함 평균"])
     for s in result["summaries"]:
-        summary.append([s["label"], s["rounds"], s["mean"], s["ci_low"], s["ci_high"], s["verdict"]])
+        summary.append([s["label"], s["rounds"], s["mean"], s["ci_low"], s["ci_high"], s["z"], s["verdict"],
+                        s["prev_overlap_mean"]])
     summary.append([])
-    summary.append(["무작위 이론값", "", result["theory"]["mean"], "", "", "10×6/45"])
+    summary.append(["무작위 이론값", "", result["theory"]["mean"], "", "", "", "10×6/45", result["theory"]["mean"]])
     _save_atomic(wb, path)

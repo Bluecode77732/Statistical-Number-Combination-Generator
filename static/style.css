@@ -213,6 +213,12 @@ th, td {
   white-space: nowrap;
 }
 
+/* 방식이 셋이고 열이 7개라 요약 표는 줄바꿈을 허용해 카드 폭 안에 둔다 (2026-11-20) */
+#backtest-summary th,
+#backtest-summary td {
+  white-space: normal;
+}
+
 th {
   background: #f7f8fa;
   font-weight: 600;

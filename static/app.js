@@ -166,11 +166,11 @@ async function loadResult() {
   if (r.analysis) renderAnalysis(r.analysis);
 }
 
-// 목적: 후보 10개와 그 선정 방식, 직전 회차와의 겹침, 백테스트 판정을 그린다.
-// 이유: 점수 차이가 오차 안이면 동점으로 보고 무작위로 고르므로(2026-11-09 결정), 몇 개가 점수로 정해졌는지와
-//       직전 번호가 들어 있어도 근거가 아니라는 점을 후보 바로 옆에서 밝혀야 한다(핵심 규칙 7, 8).
-// 방법: 서버가 준 firm, tie_pool, tie_z, previous_overlap을 문장으로 옮긴다. 계산은 하지 않는다.
-//       판정 줄에는 평균과 함께 95% 범위를 붙인다(감사 A-15). 재산출한 후보면 몇 번째인지 후보 줄에 밝힌다.
+// 목적: 후보 10개와 그 선정 방식, 묶음별 기준(재산출), 직전 회차와의 겹침, 두 방식의 백테스트 판정을 그린다.
+// 이유: 첫 화면은 점수 상위 10개, 재산출은 재산출 규칙으로 고른다(2026-11-20 사용자 결정). 어느 방식인지, 각 자리가
+//       어떤 기준으로 들어왔는지, 직전 번호가 들어 있어도 근거가 아니라는 점을 후보 바로 옆에서 밝혀야 한다(핵심 규칙 7, 8).
+// 방법: 서버가 준 method, groups, recent_rounds, freq_rounds, previous_overlap을 문장으로 옮긴다. 계산은 하지 않는다.
+//       판정 줄에는 두 방식의 평균과 95% 범위, 판정을 무작위 이론값과 나란히 적는다. 재산출한 후보면 몇 번째인지 밝힌다.
 function renderCandidates(c, bt) {
   document.getElementById("candidate-section").hidden = false;
   document.getElementById("target-round").textContent = `${c.target_round}회차용`;
@@ -180,42 +180,78 @@ function renderCandidates(c, bt) {
     ...c.numbers.map((n) => el("div", { class: "ball" }, pad(n)))
   );
   const method = document.getElementById("candidate-method");
-  method.textContent = c.fallback_reason
-    ? `선정 방식: ${c.method_label} — ${c.fallback_reason}`
-    : `선정 방식: ${c.method_label}. 전체 데이터로 학습한 모델의 점수를 쓰되, 두 번호의 점수 차이가 ` +
-      `그 차이의 표준오차 × ${c.tie_z} 이하이면(95% 기준) 같은 점수로 봅니다.`;
-
-  const ties = document.getElementById("candidate-ties");
   if (c.fallback_reason) {
-    ties.textContent = "";
-  } else if (c.firm.length) {
-    ties.textContent =
-      `이번 10개 중 ${c.firm.length}개(${c.firm.map(pad).join(", ")})는 점수가 11위 번호보다 오차를 넘게 높아 넣었고, ` +
-      `나머지 ${c.numbers.length - c.firm.length}개는 점수 차이가 오차 안인 번호 ${c.tie_pool}개 중에서 무작위로 골랐습니다. ` +
-      "번호 재산출을 누르면 무작위로 고른 자리는 바뀝니다.";
+    method.textContent = `선정 방식: ${c.method_label} — ${c.fallback_reason}`;
+  } else if (c.method === "mixed") {
+    method.textContent =
+      `선정 방식: ${c.method_label}. 아래 순서(a → b → c)로 고르고, 앞에서 고른 번호는 뒤에서 뺍니다. ` +
+      "a는 누를 때마다 같고, 나머지 자리는 누를 때마다 바뀔 수 있습니다.";
   } else {
-    ties.textContent =
-      `이번에는 점수 차이가 오차를 넘는 번호가 없어, 오차 안의 번호 ${c.tie_pool}개 중에서 10개를 무작위로 골랐습니다. ` +
-      "번호 재산출을 누르면 후보가 바뀝니다.";
+    method.textContent =
+      `선정 방식: ${c.method_label}. 전체 데이터로 학습한 모델의 점수가 높은 순서로 10개를 골랐습니다. ` +
+      "같은 데이터면 같은 후보가 나옵니다. 번호 사이의 점수 차이는 아주 작아(가중치가 모두 0에 가까움) 순위의 근거가 약합니다.";
   }
 
+  const groups = document.getElementById("candidate-groups");
+  groups.replaceChildren(...(c.method === "mixed" && !c.fallback_reason ? mixedGroupItems(c) : []));
+  groups.hidden = !groups.childElementCount;
+
+  const summaryOf = (key) => (bt && bt.ran ? bt.summaries.find((s) => s.key === key) : null);
+  const own = summaryOf(c.method);
   const prev = document.getElementById("candidate-previous");
   prev.textContent =
     c.previous_round === undefined
       ? ""
       : `직전 ${c.previous_round}회 당첨번호 6개 중 후보에 든 번호: ${c.previous_overlap.length}개` +
         `${c.previous_overlap.length ? ` (${c.previous_overlap.map(pad).join(", ")})` : ""}. ` +
-        "무작위로 10개를 고를 때의 평균은 10 × 6 / 45 ≈ 1.33개입니다. 직전 번호가 들어 있는 것은 근거가 아니며, " +
-        "각 번호의 실제 당첨 확률은 직전 회차와 무관하게 6/45 ≈ 13.3%입니다. 점수 순위로만 자르던 이전 방식에서는 " +
-        "0에 가까운 가중치가 만든 아주 작은 점수 차이 때문에 직전 번호가 매번 4~6개 들어갔습니다.";
+        "무작위로 10개를 고를 때의 평균은 10 × 6 / 45 ≈ 1.33개입니다. " +
+        (own && c.method === "logistic"
+          ? "점수 상위 10개는 '직전 회차 출현 여부' 같은 0에 가까운 가중치가 만든 아주 작은 점수 차이로 순위가 정해져, " +
+            `백테스트에서 후보에 든 직전 회차 번호가 평균 ${own.prev_overlap_mean}개였습니다. `
+          : "") +
+        (own && c.method === "mixed"
+          ? `재산출 규칙은 a와 b가 최근 번호를 많이 고르므로 백테스트에서 평균 ${own.prev_overlap_mean}개였습니다. `
+          : "") +
+        "직전 번호가 들어 있는 것은 근거가 아니며, 각 번호의 실제 당첨 확률은 직전 회차와 무관하게 6/45 ≈ 13.3%입니다.";
 
   const verdict = document.getElementById("candidate-verdict");
-  const lr = bt && bt.ran ? bt.summaries.find((s) => s.key === "logistic") : null;
-  verdict.textContent = lr
-    ? `백테스트(${bt.start_round}~${bt.end_round}회, ${bt.rounds}회): 이 모델의 평균 일치 ${lr.mean}개 ` +
-      `(95% 범위 ${lr.ci_low}~${lr.ci_high}), 무작위 이론값 ${bt.theory.mean}개 — ${lr.verdict}. ` +
-      "범위와 판정의 계산은 아래 백테스트 카드에 있습니다."
-    : "백테스트 결과가 없어 모델 성능을 확인하지 못했습니다.";
+  const lr = summaryOf("logistic");
+  const mx = summaryOf("mixed");
+  const line = (label, s, current) =>
+    `${label}${current ? "(지금 보이는 후보)" : ""}: 평균 일치 ${s.mean}개 (95% 범위 ${s.ci_low}~${s.ci_high}) — ${s.verdict}`;
+  verdict.replaceChildren(
+    ...(lr || mx
+      ? [
+          `백테스트(${bt.start_round}~${bt.end_round}회, 회차마다 그 이전 데이터로만 고름), 무작위 이론값 ${bt.theory.mean}개`,
+          ...(lr ? [el("br"), line("첫 화면 방식", lr, c.method === "logistic")] : []),
+          ...(mx ? [el("br"), line("번호 재산출 규칙", mx, c.method === "mixed")] : []),
+          el("br"),
+          "범위와 판정의 계산은 아래 백테스트 카드에 있습니다.",
+        ]
+      : ["백테스트 결과가 없어 모델 성능을 확인하지 못했습니다."])
+  );
+}
+
+// 목적: 재산출 규칙의 묶음별 번호와 기준을 목록 항목으로 만든다.
+// 이유: 각 자리가 어떤 기준(점수, 최근 5회, 최근 50회 출현 횟수)으로 들어왔는지 화면에 밝혀야 한다(핵심 규칙 7).
+// 방법: 서버가 준 groups를 순서대로 옮긴다. 출현 횟수 묶음은 번호마다 횟수와 같은 횟수의 번호 수(tied)를 적는다.
+function mixedGroupItems(c) {
+  const [r0, r1] = c.recent_rounds;
+  const [f0, f1] = c.freq_rounds;
+  const picks = (g) =>
+    g.picks
+      .map((p) => `${pad(p.number)} (${p.count}번, ${p.tied > 1 ? `같은 횟수 ${p.tied}개 중 무작위` : "이 횟수는 하나뿐"})`)
+      .join(", ");
+  const text = {
+    model: (g) => `a. ${g.label} ${g.numbers.length}개: ${g.numbers.map(pad).join(", ")} — 첫 화면과 같은 모델 점수의 1~${g.numbers.length}위`,
+    recent: (g) =>
+      `b. ${g.label}(${r0}~${r1}회, 보너스 제외) 중 a에 없는 ${g.pool}개에서 무작위 ${g.numbers.length}개: ` +
+      `${g.numbers.map(pad).join(", ")}`,
+    hot: (g) => `c-1. ${g.label}(${f0}~${f1}회) ${g.numbers.length}개: ${picks(g)}`,
+    cold: (g) => `c-2. ${g.label}(${f0}~${f1}회) ${g.numbers.length}개: ${picks(g)}`,
+    fill: (g) => `보충. b에서 고를 번호가 모자라 남은 번호에서 무작위 ${g.numbers.length}개: ${g.numbers.map(pad).join(", ")}`,
+  };
+  return c.groups.map((g) => el("li", {}, (text[g.key] || ((x) => `${x.label}: ${x.numbers.map(pad).join(", ")}`))(g)));
 }
 
 // 목적: 데이터 카드(상태, 범위, 추가·수정·삭제 회차, 파일 위치, 검증, 알림)를 그린다.
@@ -260,9 +296,11 @@ function renderData(s, v) {
   }
 }
 
-// 목적: 백테스트 카드(구간 정보, 모델별 요약, 일치 분포, 과적합 확인, 회차별 표)를 그린다.
+// 목적: 백테스트 카드(구간 정보, 방식별 요약, 일치 분포, 과적합 확인, 회차별 표)를 그린다.
 // 이유: 후보 옆 판정의 근거를 사용자가 직접 확인할 수 있어야 한다. z와 계산 방법은 감사 A-03에 따라 추가했다.
+//       2026-11-20부터 첫 화면 방식과 재산출 규칙을 함께 재므로 두 방식의 행과 열, 직전 회차 포함 평균을 넣었다.
 // 방법: 서버의 summaries와 theory를 표로 옮기고, 정의 문장은 renderBacktestDefinition이 쓴다.
+//       회차별 표는 방식마다 후보와 일치 열을 둔다. 재지 않은 회차(재산출 규칙은 이전 50회 미만)는 "-"로 둔다.
 function renderBacktest(bt) {
   document.getElementById("backtest-section").hidden = false;
   if (!bt.ran) {
@@ -280,10 +318,10 @@ function renderBacktest(bt) {
 
   table(
     "backtest-summary",
-    ["모델", "시험 회차", "평균 일치", "95% 범위", "z", "판정"],
+    ["방식", "시험 회차", "평균 일치", "95% 범위", "z", "판정", "직전 회차 포함"],
     [
-      ...bt.summaries.map((s) => [s.label, s.rounds, s.mean, `${s.ci_low} ~ ${s.ci_high}`, s.z, s.verdict]),
-      ["무작위 이론값", bt.rounds, bt.theory.mean, "-", "-", "10 × 6 / 45"],
+      ...bt.summaries.map((s) => [s.label, s.rounds, s.mean, `${s.ci_low} ~ ${s.ci_high}`, s.z, s.verdict, s.prev_overlap_mean]),
+      ["무작위 이론값", bt.rounds, bt.theory.mean, "-", "-", "10 × 6 / 45", bt.theory.mean],
     ]
   );
   renderBacktestDefinition(bt);
@@ -316,22 +354,29 @@ function renderBacktest(bt) {
       const a = actual.get(round);
       const set = new Set(a.numbers);
       const hit = (c) => (c ? c.filter((n) => set.has(n)).length : "-");
+      const nums = (c) => (c ? c.map(pad).join(" ") : "-");
       return [
         round,
         a.numbers.map(pad).join(" "),
-        m.logistic ? m.logistic.map(pad).join(" ") : "-",
+        nums(m.logistic),
         hit(m.logistic),
-        m.random.map(pad).join(" "),
+        nums(m.mixed),
+        hit(m.mixed),
+        nums(m.random),
         hit(m.random),
       ];
     });
-  table("backtest-rows", ["회차", "실제 당첨번호", "로지스틱 회귀 후보", "일치", "무작위 후보", "일치"], rows);
+  table(
+    "backtest-rows",
+    ["회차", "실제 당첨번호", "첫 화면 방식 후보", "일치", "재산출 규칙 후보", "일치", "무작위 후보", "일치"],
+    rows
+  );
 }
 
 // 목적: 백테스트 표의 "95% 범위", "z", "판정"이 어떻게 계산되는지 표 아래에 적는다.
 // 이유: 화면에 정의가 없었다(감사 A-03, 핵심 규칙 7). 이론 표준편차를 쓴다는 점도 밝혀야 한다.
 // 방법: 서버가 준 theory.mean, theory.sd, theory.z95와 시험 회차 수를 backtest._summarize의 식에 넣어 문장으로 보여 준다.
-//       이론 표준편차의 식(THEORY_SD)도 함께 적는다.
+//       이론 표준편차의 식(THEORY_SD)과, 2026-11-20에 더한 "직전 회차 번호 포함 평균"의 정의도 함께 적는다.
 function renderBacktestDefinition(bt) {
   const { mean, sd, z95 } = bt.theory;
   document.getElementById("backtest-def").textContent =
@@ -341,7 +386,9 @@ function renderBacktestDefinition(bt) {
     `z = (평균 − ${mean}) ÷ (${sd} ÷ √n). 판정: |z| < ${z95} → "무작위 기준선과 의미 있는 차이 없음", ` +
     `z ≥ ${z95} → "무작위 이론값보다 높음", z ≤ −${z95} → "무작위 이론값보다 낮음". ` +
     `무작위 이론값(${mean})이 95% 범위 안에 있으면 "의미 있는 차이 없음"과 같은 뜻입니다. ` +
-    "높음으로 나와도 미래 당첨을 보장하지 않습니다.";
+    "높음으로 나와도 미래 당첨을 보장하지 않습니다. " +
+    "직전 회차 포함 = 회차마다 직전 회차 당첨번호 6개 중 후보 10개에 든 개수의 평균. " +
+    `무작위로 고르면 ${mean}개입니다. 일치 개수가 아니라 후보가 직전 회차 번호에 얼마나 쏠렸는지를 보는 값입니다.`;
 }
 
 function renderModel(c) {
@@ -418,8 +465,8 @@ function renderAnalysis(items) {
   );
 }
 
-// 목적: 마지막 실행의 데이터로 후보 10개만 새로 받아 후보 카드와 모델 카드를 다시 그린다.
-// 이유: 후보는 동점 묶음에서 무작위로 채워지므로, 전체 절차(약 12초)를 다시 돌리지 않고 새 한 세트를 보게 한다.
+// 목적: 마지막 실행의 데이터로 재산출 규칙의 후보 10개를 새로 받아 후보 카드와 모델 카드를 다시 그린다.
+// 이유: 전체 절차(약 12초)를 다시 돌리지 않고 재산출 규칙(2026-11-20 사용자 결정)의 새 한 세트를 보게 한다.
 // 방법: /api/redraw를 부르는 동안 두 버튼을 막고, 성공하면 기억해 둔 백테스트로 판정 줄까지 다시 그린다.
 //       실패하면(실행 중, 실행 전, 서버 꺼짐) 서버나 requestJson이 준 안내를 후보 카드 아래에 보여 준다.
 async function redraw() {

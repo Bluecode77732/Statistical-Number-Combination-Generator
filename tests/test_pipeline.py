@@ -138,17 +138,22 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(p.steps["sync"]["state"], "warning")
         self.assertEqual(len(p.result["candidates"]["numbers"]), 10)
 
-    # 목적: 번호 재산출이 후보만 새로 고르고, 분석·백테스트 결과와 데이터는 그대로 두는지 확인한다.
-    # 이유: 재산출 버튼은 전체 절차를 다시 돌리지 않는다고 화면에 밝힌다. 횟수 표시와 규칙 5의 모양도 지켜야 한다.
-    # 방법: 한 번 돌린 뒤 두 번 재산출한다. 백테스트·분석 객체가 같은지, 후보가 10개·오름차순인지, 횟수가 1, 2로 느는지 본다.
+    # 목적: 번호 재산출이 재산출 규칙으로 후보만 새로 고르고, 분석·백테스트 결과와 데이터는 그대로 두는지 확인한다.
+    # 이유: 재산출 버튼은 전체 절차를 다시 돌리지 않는다고 화면에 밝힌다. 첫 산출은 점수 상위 10개, 재산출은
+    #       재산출 규칙(2026-11-20 사용자 결정)이어야 한다. 횟수 표시와 규칙 5의 모양도 지켜야 한다.
+    # 방법: 한 번 돌린 뒤 두 번 재산출한다. 방식, 백테스트·분석 객체가 같은지, 후보가 10개·오름차순인지,
+    #       횟수가 1, 2로 느는지 본다.
     def test_redraw_replaces_only_candidates(self):
         p = pipeline.Pipeline()
         p.run()
         bt, an = p.result["backtest"], p.result["analysis"]
         self.assertEqual(p.result["candidates"]["redraw_count"], 0)
+        self.assertEqual(p.result["candidates"]["method"], "logistic")
         for n in (1, 2):
             c = p.redraw()
             self.assertIs(p.result["candidates"], c)
+            self.assertEqual(c["method"], "mixed")
+            self.assertEqual([len(g["numbers"]) for g in c["groups"]], [5, 2, 1, 2])
             self.assertEqual(c["redraw_count"], n)
             self.assertEqual(len(set(c["numbers"])), 10)
             self.assertEqual(c["numbers"], sorted(c["numbers"]))
@@ -157,6 +162,22 @@ class PipelineTest(unittest.TestCase):
         self.assertIs(p.result["backtest"], bt)
         self.assertIs(p.result["analysis"], an)
         self.assertEqual(p.state, "done")
+
+    # 목적: backtest.xlsx 요약 시트에 두 선택 방식과 무작위 기준선이 z, 직전 회차 포함 평균과 함께 남는지 확인한다.
+    # 이유: 두 방식의 측정값을 화면뿐 아니라 backtest.xlsx에도 보여야 한다(2026-11-20 사용자 결정).
+    # 방법: 한 번 돌린 뒤 저장된 파일의 요약 시트 제목 행과 방식 이름, 예측 시트의 방식 수를 읽는다.
+    def test_backtest_excel_has_both_methods(self):
+        p = pipeline.Pipeline()
+        p.run()
+        wb = load_workbook(p.result["backtest"]["saved_path"], read_only=True)
+        rows = list(wb["요약"].iter_rows(values_only=True))
+        models_in_pred = {r[1] for r in wb["예측"].iter_rows(min_row=2, values_only=True)}
+        wb.close()
+        self.assertEqual(rows[0][-1], "직전 회차 번호 포함 평균")
+        self.assertIn("z", rows[0])
+        labels = [r[0] for r in rows[1:4]]
+        self.assertEqual(labels, [s["label"] for s in p.result["backtest"]["summaries"]])
+        self.assertEqual(len(models_in_pred), 3)
 
     # 목적: 실행 전이나 실행 중에는 재산출을 거부하고 다음에 할 일을 알려 주는지 확인한다.
     # 이유: 데이터가 없거나 결과가 반쯤 찬 상태에서 후보를 바꾸면 화면과 결과가 어긋난다.
